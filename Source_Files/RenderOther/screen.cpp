@@ -332,7 +332,11 @@ bool Screen::lua_hud()
 
 bool Screen::openGL()
 {
-	return screen_mode.acceleration != _no_acceleration;
+	// Only true for the actual OpenGL renderer. Direct3D 9 is a separate
+	// hardware backend that renders the 3D world natively but uses the
+	// software 2D paths (HUD/overhead map/terminal drawn into SDL buffers,
+	// then blitted through D3D9), so it must NOT report as OpenGL here.
+	return screen_mode.acceleration == _opengl_acceleration;
 }
 
 bool Screen::fifty_percent()
@@ -930,6 +934,13 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 			SDL_DestroyRenderer(main_render);
 			main_render = NULL;
 		}
+#ifdef HAVE_DX9
+	// Tear down the Direct3D 9 device before destroying its window. Without this
+	// the device keeps the old HWND/swapchain and switching to the software or
+	// OpenGL renderer (which recreate the window) renders black.
+	if (D3D9_IsActive())
+		D3D9_Shutdown();
+#endif
 	if (main_screen != NULL) {
 		Uint32 window_id = SDL_GetWindowID(main_screen);
 	    SDL_DestroyWindow(main_screen);
@@ -1096,7 +1107,16 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 		}
 	}
 	if (!main_surface) {
-		main_surface = SDL_CreateRGBSurface(SDL_SWSURFACE, vmode_width, vmode_height, 32, pixel_format_32.Rmask, pixel_format_32.Gmask, pixel_format_32.Bmask, 0);
+		// For the Direct3D 9 backend the main surface is used as a transparent
+		// overlay (the world is on the D3D9 backbuffer, the 2D HUD is drawn into
+		// this surface then alpha-composited over it), so it needs a real alpha
+		// channel. The other backends present the whole surface, so alpha is 0.
+		uint32 amask = 0;
+#ifdef HAVE_DX9
+		if (screen_mode.acceleration == _direct3d_acceleration)
+			amask = ~(pixel_format_32.Rmask | pixel_format_32.Gmask | pixel_format_32.Bmask);
+#endif
+		main_surface = SDL_CreateRGBSurface(SDL_SWSURFACE, vmode_width, vmode_height, 32, pixel_format_32.Rmask, pixel_format_32.Gmask, pixel_format_32.Bmask, amask);
 	}
 #ifdef MUST_RELOAD_VIEW_CONTEXT
 	if (!nogl && screen_mode.acceleration == _opengl_acceleration)
@@ -1462,14 +1482,95 @@ void render_screen(short ticks_elapsed)
 	else if (software_render_dest.empty() || ViewChangedSize)
 		software_render_dest = bitmap_definition_of_sdl_surface(world_pixels);
 	
+#ifdef HAVE_DX9
+	// Place the native D3D9 world into the engine view rect (scaled/offset when
+	// the HUD is active) so the HUD frame around it is visible. Backbuffer is
+	// window-sized, so make the rect relative to the window origin. The overhead
+	// map replaces the whole view, so render the world full-frame in that mode.
+	if (screen_mode.acceleration == _direct3d_acceleration && D3D9_IsActive()) {
+		// Backbuffer must match the actual window (it is created at menu res and
+		// the window grows for gameplay); otherwise the world is stretched and
+		// the window-space overlay/viewport rects don't line up.
+		D3D9_EnsureBackbufferSize(main_surface->w, main_surface->h);
+		if (world_view->overhead_map_active || world_view->terminal_mode_active) {
+			D3D9_SetWorldViewport(0, 0, 0, 0);
+		} else {
+			SDL_Rect wr = Screen::instance()->window_rect();
+			D3D9_SetWorldViewport(ViewRect.x - wr.x, ViewRect.y - wr.y,
+								  ViewRect.w, ViewRect.h);
+		}
+	}
+#endif
+
 	// Render world view
 	render_view(world_view, software_render_dest.get());
 
 #ifdef HAVE_DX9
 	// The Direct3D 9 rasterizer drew the world directly to the backbuffer and
-	// presented it in RasterizerClass::End(). HUD / 2D overlays are not yet
-	// ported to the native FFP path (Step 7), so finish the frame here.
+	// left the scene open. Draw the 2D overlays (HUD, overhead map, terminal)
+	// into the software main surface, composite those regions over the native
+	// world, then finish (EndScene + Present) the frame.
 	if (screen_mode.acceleration == _direct3d_acceleration && D3D9_IsActive()) {
+		// Only composite the HUD/overlays while actually in the game; when a
+		// dialog is up (pause, quit-confirm) the game state changes and the menu
+		// is drawn separately over a frozen frame, so the HUD must not show.
+		if (get_game_state() == _game_in_progress) {
+		// Crosshairs (drawn into world_pixels by the SW path) are skipped for
+		// now; HUD/map/terminal are the priority overlays.
+
+		// Overhead map: fills the view; render it (already drawn into Map_Buffer
+		// by render_view) and composite over the whole view rect.
+		if (world_view->overhead_map_active) {
+			SDL_Rect src_rect = { 0, 0, MapRect.w, MapRect.h };
+			DrawSurface(Map_Buffer, MapRect, src_rect);
+			D3D9_BlitSurfaceRegion(main_surface,
+								   MapRect.x, MapRect.y, MapRect.w, MapRect.h,
+								   MapRect.x, MapRect.y, MapRect.w, MapRect.h,
+								   false);
+		}
+
+		// HUD panel (non-Lua). draw_interface() only refills HUD_Buffer on
+		// events; force a full redraw so the panel is present every frame the
+		// world is rebuilt (the D3D9 backbuffer is cleared each frame).
+		if (!Screen::instance()->lua_hud() && Screen::instance()->hud()) {
+			ensure_HUD_buffer();
+			draw_interface();          // full panel redraw (background + frame)
+			update_interface(NONE);    // dynamic elements (health/ammo/sensor)
+			SDL_Rect src_rect = { 0, 320, 640, 160 };
+			DrawSurface(HUD_Buffer, HUD_DestRect, src_rect);
+			D3D9_BlitSurfaceRegion(main_surface,
+								   HUD_DestRect.x, HUD_DestRect.y, HUD_DestRect.w, HUD_DestRect.h,
+								   HUD_DestRect.x, HUD_DestRect.y, HUD_DestRect.w, HUD_DestRect.h,
+								   false);
+			HUD_RenderRequest = false;
+		}
+
+		// Lua HUD (chrome frame + floating elements). main_surface has a real
+		// alpha channel for D3D9; clear it fully transparent, let the Lua HUD
+		// draw (its blits carry source alpha: opaque chrome = 0xFF, untouched =
+		// 0), then alpha-composite the whole surface over the native world.
+		if (Screen::instance()->lua_hud()) {
+			SDL_FillRect(main_surface, NULL, SDL_MapRGBA(main_surface->format, 0, 0, 0, 0));
+			Lua_DrawHUD(ticks_elapsed);
+			D3D9_BlitSurfaceRegion(main_surface,
+								   0, 0, main_surface->w, main_surface->h,
+								   0, 0, main_surface->w, main_surface->h,
+								   true, -1);
+		}
+
+		// Terminal.
+		if (world_view->terminal_mode_active && Term_Buffer) {
+			SDL_Rect src_rect = { 0, 0, Term_Buffer->w, Term_Buffer->h };
+			DrawSurface(Term_Buffer, TermRect, src_rect);
+			D3D9_BlitSurfaceRegion(main_surface,
+								   TermRect.x, TermRect.y, TermRect.w, TermRect.h,
+								   TermRect.x, TermRect.y, TermRect.w, TermRect.h,
+								   false);
+			Term_RenderRequest = false;
+		}
+		} // _game_in_progress
+
+		D3D9_FinishFrame();
 		Movie::instance()->AddFrame(Movie::FRAME_NORMAL);
 		return;
 	}

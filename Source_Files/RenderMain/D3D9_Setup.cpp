@@ -44,10 +44,28 @@ static IDirect3D9* d3d_object = nullptr;
 static D3DPRESENT_PARAMETERS present_params = {};
 static bool device_lost = false;
 
+// Remembered creation params so the device can be reset (e.g. when the window
+// size changes between the menu and gameplay) without re-querying SDL.
+static HWND d3d_hwnd = nullptr;
+static bool d3d_fullscreen = false;
+static bool d3d_vsync = false;
+
+// Sub-rectangle of the backbuffer the world view renders into. When the HUD is
+// active the engine scales/offsets the 3D view (Screen::view_rect); the native
+// world must render into that same rect so the HUD frame is visible around it.
+// (0,0,0,0) = full backbuffer.
+static int world_vp_x = 0, world_vp_y = 0, world_vp_w = 0, world_vp_h = 0;
+static void set_full_viewport();
+
 // Texture used to blit the engine's software framebuffer / 2D UI to the screen.
 // Recreated when the source surface size changes.
 static IDirect3DTexture9* blit_texture = nullptr;
 static int blit_w = 0, blit_h = 0;
+
+// Texture used to blit 2D overlay regions (HUD, overhead map, terminal) from the
+// engine's main software surface onto the open D3D9 scene without presenting.
+static IDirect3DTexture9* overlay_texture = nullptr;
+static int overlay_w = 0, overlay_h = 0;
 
 // Pre-transformed (screen-space) textured vertex for the fullscreen blit quad.
 struct ScreenVertex
@@ -65,6 +83,16 @@ static void release_blit_texture()
 		blit_texture = nullptr;
 	}
 	blit_w = blit_h = 0;
+}
+
+static void release_overlay_texture()
+{
+	if (overlay_texture)
+	{
+		overlay_texture->Release();
+		overlay_texture = nullptr;
+	}
+	overlay_w = overlay_h = 0;
 }
 
 IDirect3DDevice9* D3D9_Device()
@@ -121,6 +149,9 @@ bool D3D9_Startup(SDL_Window* window, int width, int height, bool fullscreen, bo
 	HWND hwnd = get_hwnd(window);
 	if (!hwnd)
 		return false;
+	d3d_hwnd = hwnd;
+	d3d_fullscreen = fullscreen;
+	d3d_vsync = vsync;
 
 	d3d_object = Direct3DCreate9(D3D_SDK_VERSION);
 	if (!d3d_object)
@@ -153,9 +184,46 @@ bool D3D9_Startup(SDL_Window* window, int width, int height, bool fullscreen, bo
 	return true;
 }
 
+// Reset the device to a new backbuffer size (window resized, e.g. menu->game).
+// Releases DEFAULT-pool resources, resets, and restores nothing else (render
+// state is set per-frame). Returns true on success.
+static bool reset_device(int width, int height)
+{
+	if (!d3d_device)
+		return false;
+
+	release_blit_texture();
+	release_overlay_texture();
+	fill_present_params(d3d_hwnd, width, height, d3d_fullscreen, d3d_vsync);
+	HRESULT hr = d3d_device->Reset(&present_params);
+	if (FAILED(hr))
+	{
+		logError("D3D9: Reset to %dx%d failed (hr=0x%08lx)", width, height, (unsigned long)hr);
+		device_lost = true;
+		return false;
+	}
+	device_lost = false;
+	return true;
+}
+
+// Ensure the backbuffer matches the given size (the window's client area). The
+// device is created at menu resolution and the window grows for gameplay, so
+// the backbuffer must follow or the world is stretched and overlay coordinates
+// (in window space) don't line up with the backbuffer.
+void D3D9_EnsureBackbufferSize(int width, int height)
+{
+	if (!d3d_device || width <= 0 || height <= 0)
+		return;
+	if ((int)present_params.BackBufferWidth == width &&
+		(int)present_params.BackBufferHeight == height)
+		return;
+	reset_device(width, height);
+}
+
 void D3D9_Shutdown()
 {
 	release_blit_texture();
+	release_overlay_texture();
 	if (d3d_device)
 	{
 		d3d_device->Release();
@@ -187,6 +255,7 @@ static bool handle_device_lost()
 	{
 		// Release DEFAULT-pool resources before Reset.
 		release_blit_texture();
+		release_overlay_texture();
 		HRESULT hr = d3d_device->Reset(&present_params);
 		if (SUCCEEDED(hr))
 		{
@@ -315,6 +384,117 @@ bool D3D9_Present2D(SDL_Surface* surface)
 	return true;
 }
 
+// Blit a sub-rectangle of a 32-bit SDL surface onto the (already open) D3D9
+// scene as a screen-space quad. No Clear, no Present: used to composite the 2D
+// overlays (HUD, overhead map, terminal) over the native world before the frame
+// is finished. dst* are backbuffer pixels; src* are surface pixels. alpha_blend
+// uses the surface's alpha (for translucent overlays like the overhead map).
+bool D3D9_BlitSurfaceRegion(SDL_Surface* surface,
+							int src_x, int src_y, int src_w, int src_h,
+							int dst_x, int dst_y, int dst_w, int dst_h,
+							bool alpha_blend, long color_key)
+{
+	if (!d3d_device || !surface || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0)
+		return false;
+
+	// Overlays use full-backbuffer screen coordinates; the world viewport may
+	// still be set from the 3D pass.
+	set_full_viewport();
+
+	const int w = surface->w;
+	const int h = surface->h;
+
+	if (!overlay_texture || overlay_w != w || overlay_h != h)
+	{
+		release_overlay_texture();
+		HRESULT hr = d3d_device->CreateTexture(w, h, 1, D3DUSAGE_DYNAMIC,
+											   D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+											   &overlay_texture, nullptr);
+		if (FAILED(hr))
+		{
+			logError("D3D9: overlay texture creation failed (hr=0x%08lx)", (unsigned long)hr);
+			return false;
+		}
+		overlay_w = w;
+		overlay_h = h;
+	}
+
+	D3DLOCKED_RECT locked;
+	if (FAILED(overlay_texture->LockRect(0, &locked, nullptr, D3DLOCK_DISCARD)))
+		return false;
+	SDL_LockSurface(surface);
+	const uint8_t* spx = static_cast<const uint8_t*>(surface->pixels);
+	uint8_t* dpx = static_cast<uint8_t*>(locked.pBits);
+	// Copy RGB and synthesize alpha. The engine's main surface has no alpha
+	// channel, so a color key marks transparent pixels (used for the sparse,
+	// mostly-transparent Lua HUD). color_key < 0 = fully opaque (panel/map).
+	const uint32_t key = (color_key >= 0) ? ((uint32_t)color_key & 0x00FFFFFFu) : 0xFFFFFFFFu;
+	for (int y = 0; y < h; ++y)
+	{
+		const uint32_t* srow = (const uint32_t*)(spx + y * surface->pitch);
+		uint32_t* drow = (uint32_t*)(dpx + y * locked.Pitch);
+		for (int x = 0; x < w; ++x)
+		{
+			uint32_t s = srow[x];
+			uint32_t p = s & 0x00FFFFFFu;
+			uint32_t a;
+			if (color_key >= 0)
+				a = (p == key) ? 0x00000000u : 0xFF000000u;  // color-keyed transparency
+			else
+				a = s & 0xFF000000u;                          // use surface's own alpha
+			drow[x] = p | a;
+		}
+	}
+	SDL_UnlockSurface(surface);
+	overlay_texture->UnlockRect(0);
+
+	// Source UVs (normalized) for the requested sub-rect.
+	const float u0 = (float)src_x / (float)w;
+	const float v0 = (float)src_y / (float)h;
+	const float u1 = (float)(src_x + src_w) / (float)w;
+	const float v1 = (float)(src_y + src_h) / (float)h;
+	const float x0 = (float)dst_x - 0.5f;
+	const float y0 = (float)dst_y - 0.5f;
+	const float x1 = (float)(dst_x + dst_w) - 0.5f;
+	const float y1 = (float)(dst_y + dst_h) - 0.5f;
+
+	const ScreenVertex quad[4] = {
+		{ x0, y0, 0.0f, 1.0f, u0, v0 },
+		{ x1, y0, 0.0f, 1.0f, u1, v0 },
+		{ x0, y1, 0.0f, 1.0f, u0, v1 },
+		{ x1, y1, 0.0f, 1.0f, u1, v1 },
+	};
+
+	d3d_device->SetRenderState(D3DRS_LIGHTING, FALSE);
+	d3d_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+	d3d_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+	if (alpha_blend)
+	{
+		d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+		d3d_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+		d3d_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	}
+	else
+	{
+		d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+	}
+	d3d_device->SetTexture(0, overlay_texture);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	d3d_device->SetTextureStageState(0, D3DTSS_ALPHAOP,
+									 alpha_blend ? D3DTOP_SELECTARG1 : D3DTOP_DISABLE);
+	d3d_device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	d3d_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+	d3d_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+	d3d_device->SetFVF(SCREEN_FVF);
+	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(ScreenVertex));
+
+	// Leave blend disabled for subsequent draws.
+	d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+	return true;
+}
+
 // --- Native fixed-function world rendering ---
 
 // Flat-shaded screen-space vertex (pre-transformed, with diffuse color).
@@ -324,6 +504,38 @@ struct WorldScreenVertex
 	D3DCOLOR color;
 };
 static const DWORD WORLD_SCREEN_FVF = D3DFVF_XYZRHW | D3DFVF_DIFFUSE;
+
+void D3D9_SetWorldViewport(int x, int y, int w, int h)
+{
+	world_vp_x = x; world_vp_y = y; world_vp_w = w; world_vp_h = h;
+}
+
+int D3D9_WorldViewportWidth()  { return world_vp_w > 0 ? world_vp_w : D3D9_BackbufferWidth(); }
+int D3D9_WorldViewportHeight() { return world_vp_h > 0 ? world_vp_h : D3D9_BackbufferHeight(); }
+int D3D9_WorldViewportX()      { return world_vp_w > 0 ? world_vp_x : 0; }
+int D3D9_WorldViewportY()      { return world_vp_h > 0 ? world_vp_y : 0; }
+
+// Reset the device viewport to the full backbuffer (for screen-space overlays).
+static void set_full_viewport()
+{
+	if (!d3d_device) return;
+	D3DVIEWPORT9 vp = { 0, 0, (DWORD)present_params.BackBufferWidth,
+						(DWORD)present_params.BackBufferHeight, 0.0f, 1.0f };
+	d3d_device->SetViewport(&vp);
+}
+
+// Set the device viewport to the world view rect (or full backbuffer if unset).
+static void set_world_viewport()
+{
+	if (!d3d_device) return;
+	if (world_vp_w > 0 && world_vp_h > 0)
+	{
+		D3DVIEWPORT9 vp = { (DWORD)world_vp_x, (DWORD)world_vp_y,
+							(DWORD)world_vp_w, (DWORD)world_vp_h, 0.0f, 1.0f };
+		d3d_device->SetViewport(&vp);
+	}
+	else set_full_viewport();
+}
 
 bool D3D9_WorldBegin()
 {
@@ -338,6 +550,15 @@ bool D3D9_WorldBegin()
 
 	if (FAILED(d3d_device->BeginScene()))
 		return false;
+
+	// Restrict world rendering to the engine's view rect (scaled/offset when the
+	// HUD is active) so the HUD frame around it stays visible. Depth range full.
+	if (world_vp_w > 0 && world_vp_h > 0)
+	{
+		D3DVIEWPORT9 vp = { (DWORD)world_vp_x, (DWORD)world_vp_y,
+							(DWORD)world_vp_w, (DWORD)world_vp_h, 0.0f, 1.0f };
+		d3d_device->SetViewport(&vp);
+	}
 
 	// Fixed-function, no lighting (baked per-vertex), no backface cull (engine
 	// already culls), depth test on for correct 3D occlusion.
@@ -360,6 +581,13 @@ void D3D9_WorldEnd()
 	HRESULT hr = d3d_device->Present(nullptr, nullptr, nullptr, nullptr);
 	if (hr == D3DERR_DEVICELOST)
 		device_lost = true;
+}
+
+// EndScene + Present, used after the world AND its 2D overlays (HUD, map,
+// terminal) have been drawn into the open scene.
+void D3D9_FinishFrame()
+{
+	D3D9_WorldEnd();
 }
 
 void D3D9_DrawScreenPolygon(const D3D9_ScreenPoint* points, int count, unsigned long rgb)
@@ -588,8 +816,9 @@ void D3D9_DrawScreenSprite(float x0, float y0, float x1, float y1, float z,
 	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
 
 	// Depth-test against the world; alpha-test the cutout.
-	d3d_device->SetRenderState(D3DRS_ZENABLE, TRUE);
-	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, blend ? FALSE : TRUE);
+	// Foreground weapon: always on top, no depth test.
+	d3d_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
 	d3d_device->SetRenderState(D3DRS_ALPHAREF, 128);
 	d3d_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
@@ -611,6 +840,10 @@ void D3D9_DrawScreenSpriteUV(float x0, float y0, float x1, float y1, float z,
 	if (!d3d_device || !texture)
 		return;
 
+	// Coordinates are full-window backbuffer pixels (the caller already applied
+	// the view offset), so draw against the full viewport.
+	set_full_viewport();
+
 	const D3DCOLOR c = (D3DCOLOR)color;
 	const SpriteVertex quad[4] = {
 		{ x0, y0, z, 1.0f, c, uv[0], uv[1] }, // TL
@@ -630,8 +863,9 @@ void D3D9_DrawScreenSpriteUV(float x0, float y0, float x1, float y1, float z,
 	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
 	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
 
-	d3d_device->SetRenderState(D3DRS_ZENABLE, TRUE);
-	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, blend ? FALSE : TRUE);
+	// Foreground weapon: always on top, no depth test.
+	d3d_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
 	d3d_device->SetRenderState(D3DRS_ALPHAREF, 128);
 	d3d_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);

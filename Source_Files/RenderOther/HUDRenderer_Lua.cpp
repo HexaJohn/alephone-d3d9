@@ -103,7 +103,10 @@ void HUD_Lua_Class::start_draw(void)
 	alephone::Screen *scr = alephone::Screen::instance();
 	scr->bound_screen();
     m_wr = scr->window_rect();
-	m_opengl = (get_screen_mode()->acceleration != _no_acceleration);
+	// Only the real OpenGL backend draws the Lua HUD with GL calls. The Direct3D
+	// 9 backend has no GL context, so it must use the software path (draw into
+	// the SDL surface); render_screen then composites that over the D3D9 world.
+	m_opengl = (get_screen_mode()->acceleration == _opengl_acceleration);
 	m_masking_mode = _mask_disabled;
 	
 #ifdef HAVE_OPENGL
@@ -445,7 +448,6 @@ void HUD_Lua_Class::draw_image(Image_Blitter *image, float x, float y)
 		return;
 	
 	Image_Rect r{ x, y, image->crop_rect.w, image->crop_rect.h };
-	
 	if (!r.w || !r.h)
 		return;
 

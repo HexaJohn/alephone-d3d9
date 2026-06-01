@@ -45,6 +45,10 @@ bool D3D9_Startup(SDL_Window* window, int width, int height, bool fullscreen, bo
 // Destroy the device and release the Direct3D object.
 void D3D9_Shutdown();
 
+// Reset the backbuffer to match the window client size if it has changed (the
+// device is created at menu resolution and the window grows for gameplay).
+void D3D9_EnsureBackbufferSize(int width, int height);
+
 // Begin a frame: handle device-lost/reset, clear the backbuffer to the given
 // color (0xRRGGBB), and BeginScene. Returns false if the device is lost and
 // could not be reset this frame (caller should skip drawing).
@@ -59,6 +63,21 @@ void D3D9_EndFrame();
 // the native FFP geometry path is built out. Returns false on failure.
 struct SDL_Surface;
 bool D3D9_Present2D(struct SDL_Surface* surface);
+
+// Composite a sub-rectangle of a 32-bit SDL surface onto the already-open D3D9
+// scene as a screen-space quad (no Clear/Present). Used to draw the 2D overlays
+// (HUD, overhead map, terminal) over the native FFP world before finishing the
+// frame. dst* in backbuffer pixels, src* in surface pixels.
+// color_key >= 0 (0xRRGGBB) marks transparent pixels (for the sparse Lua HUD
+// drawn over a cleared key color); < 0 = fully opaque (classic panel/map).
+bool D3D9_BlitSurfaceRegion(struct SDL_Surface* surface,
+							int src_x, int src_y, int src_w, int src_h,
+							int dst_x, int dst_y, int dst_w, int dst_h,
+							bool alpha_blend, long color_key = -1);
+
+// EndScene + Present after the world and its 2D overlays have been drawn into
+// the open scene (counterpart to the world Begin in Rasterizer_D3D9::Begin()).
+void D3D9_FinishFrame();
 
 // --- Native fixed-function world rendering (Rasterizer_D3D9) ---
 
@@ -89,6 +108,18 @@ void D3D9_GetCameraBasis(float* right, float* up, float* fwd);
 // Backbuffer dimensions (for scaling screen-space coordinates).
 int D3D9_BackbufferWidth();
 int D3D9_BackbufferHeight();
+
+// Set the sub-rectangle of the backbuffer the 3D world renders into (the engine
+// view rect; scaled/offset when the HUD is active). Call before render_view.
+// (0,0,0,0) restores full-backbuffer rendering.
+void D3D9_SetWorldViewport(int x, int y, int w, int h);
+
+// Current world viewport dimensions (= view rect, or backbuffer if unset). Used
+// to place screen-space draws (weapon-in-hand) consistently inside the viewport.
+int D3D9_WorldViewportWidth();
+int D3D9_WorldViewportHeight();
+int D3D9_WorldViewportX();
+int D3D9_WorldViewportY();
 
 // A world-space textured/colored vertex.
 struct D3D9_WorldVertex

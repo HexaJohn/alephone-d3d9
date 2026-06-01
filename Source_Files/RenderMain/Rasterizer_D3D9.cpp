@@ -81,7 +81,8 @@ void Rasterizer_D3D9_Class::Begin()
 
 void Rasterizer_D3D9_Class::End()
 {
-	D3D9_WorldEnd();
+	// Leave the scene open: render_screen draws the 2D overlays (HUD, overhead
+	// map, terminal) on top, then calls D3D9_FinishFrame to EndScene + Present.
 }
 
 void Rasterizer_D3D9_Class::texture_horizontal_polygon(polygon_definition& textured_polygon)
@@ -116,15 +117,22 @@ void Rasterizer_D3D9_Class::texture_rectangle(rectangle_definition& r)
 	if (!tex)
 		return;
 
-	// The weapon rect is in the engine view's coordinate space (view->screen_*),
-	// which can differ from the backbuffer size; scale to backbuffer pixels.
-	float sx = 1.0f, sy = 1.0f;
-	if (view && view->screen_width > 0 && view->screen_height > 0)
-	{
-		sx = (float)D3D9_BackbufferWidth() / (float)view->screen_width;
-		sy = (float)D3D9_BackbufferHeight() / (float)view->screen_height;
-	}
-	float L = r.x0 * sx, T = r.y0 * sy, R = r.x1 * sx, B = r.y1 * sy;
+	// The weapon rect is in the engine view's coordinate space (view->screen_*).
+	// The world renders into the (HUD-offset) view viewport, and screen-space
+	// XYZRHW draws map through that viewport, so scale to the viewport size, not
+	// the full backbuffer.
+	const int sw = (view && view->screen_width  > 0) ? view->screen_width  : 1;
+	const int sh = (view && view->screen_height > 0) ? view->screen_height : 1;
+
+	// Map the weapon rect (view-space) to backbuffer pixels: scale by the view
+	// viewport size and offset by the viewport origin (the view is centered/
+	// offset inside the window for the classic framed HUD). Drawn in full-window
+	// coordinates so it does not depend on the device viewport being set.
+	float sx = (float)D3D9_WorldViewportWidth()  / (float)sw;
+	float sy = (float)D3D9_WorldViewportHeight() / (float)sh;
+	float ox = (float)D3D9_WorldViewportX();
+	float oy = (float)D3D9_WorldViewportY();
+	float L = ox + r.x0 * sx, T = oy + r.y0 * sy, R = ox + r.x1 * sx, B = oy + r.y1 * sy;
 	if (R <= L || B <= T)
 		return;
 

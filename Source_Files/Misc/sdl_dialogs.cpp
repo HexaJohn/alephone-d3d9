@@ -40,6 +40,9 @@
 #include "screen_drawing.h"
 #include "shell.h"
 #include "screen.h"
+#ifdef HAVE_DX9
+#include "D3D9_Setup.h"
+#endif
 #include "images.h"
 #include "world.h"
 #include "SoundManager.h"
@@ -1798,6 +1801,13 @@ void dialog::update(SDL_Rect r) const
 #endif
 	{
 		SDL_Surface *video = MainScreenSurface();
+#ifdef HAVE_DX9
+		// Direct3D 9 presents the whole main surface (not just the dialog rect),
+		// and the game's HUD/world is on the D3D9 backbuffer, not this surface.
+		// Match the OpenGL path: black backdrop with the dialog centered.
+		if (get_screen_mode()->acceleration == _direct3d_acceleration && D3D9_IsActive())
+			SDL_FillRect(video, NULL, SDL_MapRGBA(video->format, 0, 0, 0, 255));
+#endif
 		SDL_Rect dst_rect = rect;
 		SDL_Rect src_rect = { 0, 0, rect.w, rect.h };
 		SDL_BlitSurface(dialog_surface, &src_rect, video, &dst_rect);
