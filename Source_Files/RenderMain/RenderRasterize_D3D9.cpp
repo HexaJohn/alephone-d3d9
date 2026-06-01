@@ -269,9 +269,87 @@ void RenderRasterize_D3D9::render_node_object(render_object_data* object,
 	if (renderStep != kDiffuse)
 		return;
 
-	// Sprites/objects: not yet ported to native 3D billboards. Skip for now so
-	// the world (walls/floors/ceilings) renders cleanly; objects come next.
-	(void)object;
+	rectangle_definition& rect = object->rectangle;
+	double depth = (double)rect.depth;
+	if (depth <= 0)
+		return; // weapons-in-hand handled by the HUD/2D pass
+
+	TextureManager TMgr;
+	TMgr.ShapeDesc = rect.ShapeDesc;
+	TMgr.LowLevelShape = rect.LowLevelShape;
+	TMgr.ShadingTables = rect.shading_tables;
+	TMgr.Texture = rect.texture;
+	TMgr.TransferMode = rect.transfer_mode;
+	TMgr.TransferData = rect.transfer_data;
+	TMgr.IsShadeless = (rect.flags & _SHADELESS_BIT) != 0;
+	TMgr.TextureType = OGL_Txtr_Inhabitant;
+	if (!TMgr.Setup())
+		return;
+	IDirect3DTexture9* tex = D3D9_GetTexture(TMgr);
+	if (!tex)
+		return;
+
+	if (rect.x1 <= rect.x0 || rect.y1 <= rect.y0)
+		return;
+
+	// Use the object's native world-space billboard data (set by RenderPlaceObjs
+	// for the "new rendering pipeline"): Position is the world location, and
+	// WorldLeft/Right/Top/Bottom are the sprite's extents around it. No screen
+	// projection inversion needed.
+	//
+	// Standard Marathon sprite = Y-axis billboard: it stays vertical (world z up)
+	// and rotates about z to face the viewer. Horizontal axis = direction from
+	// the object to the viewer, projected onto the horizontal plane, rotated 90.
+	// Horizontal billboard axis = the camera's right vector projected onto the
+	// horizontal plane (matches the engine, which lays sprites out along screen-x
+	// = the view yaw's right, not per-object). Keeps sprites parallel to the
+	// view plane and vertical (z up).
+	float camR[3], camU[3], camF[3];
+	D3D9_GetCameraBasis(camR, camU, camF);
+	double hrx = camR[0], hry = camR[1];
+	double hlen = sqrt(hrx * hrx + hry * hry);
+	if (hlen < 1e-6) { hrx = 1; hry = 0; hlen = 1; }
+	hrx /= hlen; hry /= hlen;
+
+	double cx = rect.Position.x, cy = rect.Position.y, cz = rect.Position.z;
+	double wl = rect.WorldLeft, wr = rect.WorldRight;   // horizontal extents
+	double wt = rect.WorldTop, wb = rect.WorldBottom;   // vertical extents (z), engine-exact
+
+	// UV: our D3D9 texture is the exact decoded sprite size (NOT power-of-two
+	// padded like the OpenGL path), so the sprite spans the full 0..1 range, not
+	// 0..U_Scale. Marathon sprites are stored rotated; flip-aware.
+	float uMin = rect.flip_vertical   ? 1.0f : 0.0f;
+	float uMax = rect.flip_vertical   ? 0.0f : 1.0f;
+	float vMin = rect.flip_horizontal ? 1.0f : 0.0f;
+	float vMax = rect.flip_horizontal ? 0.0f : 1.0f;
+
+	unsigned long color = shaded_vertex_color(view, rect.ambient_shade, depth);
+
+	// Corners: top-left, top-right, bottom-right, bottom-left.
+	// Horizontal offset = hr * (wl or wr); vertical offset = world z (wt or wb).
+	struct C { double h; double z; float u, v; };
+	C cc[4] = {
+		{ wl, wt, uMin, vMin }, // top-left
+		{ wr, wt, uMin, vMax }, // top-right
+		{ wr, wb, uMax, vMax }, // bottom-right
+		{ wl, wb, uMax, vMin }, // bottom-left
+	};
+	D3D9_WorldVertex verts[4];
+	for (int i = 0; i < 4; ++i)
+	{
+		verts[i].x = (float)(cx + hrx * cc[i].h);
+		verts[i].y = (float)(cy + hry * cc[i].h);
+		verts[i].z = (float)(cz + cc[i].z);
+		verts[i].u = cc[i].u;
+		verts[i].v = cc[i].v;
+		verts[i].color = color;
+	}
+
+	bool blended = TMgr.IsBlended();
+	// Sprites render after the floor in tree order and the engine intends their
+	// base to dip into the floor; draw without depth test (the render tree is
+	// already back-to-front) so the floor doesn't clip the lower part.
+	D3D9_DrawWorldSprite(verts, 4, tex, blended);
 }
 
 #endif // HAVE_DX9

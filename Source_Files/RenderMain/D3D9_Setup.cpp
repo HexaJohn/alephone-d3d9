@@ -396,6 +396,16 @@ static const float kZNear = 50.0f;
 static const float kZFar = 1.5f * 64 * WORLD_ONE;
 static const DWORD WORLD_FVF = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1;
 
+// Camera basis in world space (set by D3D9_SetViewTransforms; used for billboards).
+static float g_cam_right[3] = {1, 0, 0};
+static float g_cam_up[3] = {0, 0, 1};
+static float g_cam_fwd[3] = {0, 1, 0};
+
+void D3D9_GetCameraBasis(float* right, float* up, float* fwd)
+{
+	for (int i = 0; i < 3; ++i) { right[i] = g_cam_right[i]; up[i] = g_cam_up[i]; fwd[i] = g_cam_fwd[i]; }
+}
+
 void D3D9_SetViewTransforms(view_data* view)
 {
 	if (!d3d_device || !view)
@@ -405,21 +415,22 @@ void D3D9_SetViewTransforms(view_data* view)
 	const float cosy = float(TrigRecip * cosine_table[view->yaw]);
 	const float siny = float(TrigRecip * sine_table[view->yaw]);
 
-	// Marathon world: x,y horizontal, z up. View direction in the horizontal
-	// plane is (cosy, siny). Pitch tilts up/down: dtanpitch = world_to_screen_y
-	// * tan(pitch), so the vertical slope of the forward vector is
-	// dtanpitch/world_to_screen_y.
-	float vslope = 0.0f;
-	if (view->world_to_screen_y != 0)
-		vslope = float(view->dtanpitch) / float(view->world_to_screen_y);
-
+	// Marathon world: x,y horizontal, z up. View direction is horizontal
+	// (cosy, siny); pitch is applied as a projection shear (dtanpitch) below,
+	// NOT as an eye rotation, so the view forward stays level.
 	D3DXVECTOR3 eye(float(view->origin.x), float(view->origin.y), float(view->origin.z));
-	D3DXVECTOR3 fwd(cosy, siny, vslope);
+	D3DXVECTOR3 fwd(cosy, siny, 0.0f);
 	D3DXVECTOR3 at(eye.x + fwd.x, eye.y + fwd.y, eye.z + fwd.z);
 	D3DXVECTOR3 up(0.0f, 0.0f, 1.0f); // world z-up
 
 	D3DMATRIX finalView;
 	D3DXMatrixLookAtLH(reinterpret_cast<D3DXMATRIX*>(&finalView), &eye, &at, &up);
+
+	// Cache the camera basis in world space for billboards. For a D3D row-vector
+	// view matrix, the world right/up/forward axes are the matrix columns.
+	g_cam_right[0] = finalView._11; g_cam_right[1] = finalView._21; g_cam_right[2] = finalView._31;
+	g_cam_up[0]    = finalView._12; g_cam_up[1]    = finalView._22; g_cam_up[2]    = finalView._32;
+	g_cam_fwd[0]   = finalView._13; g_cam_fwd[1]   = finalView._23; g_cam_fwd[2]   = finalView._33;
 
 	// Projection: derive directly from the engine's own screen projection so the
 	// field of view matches the software/OpenGL renderers exactly. The engine
@@ -431,12 +442,15 @@ void D3D9_SetViewTransforms(view_data* view)
 	const float wts_y = view->world_to_screen_y ? float(view->world_to_screen_y) : 1.0f;
 	const float halfW = float(view->half_screen_width);
 	const float halfH = float(view->half_screen_height);
+	const float dtp = float(view->dtanpitch); // vertical pitch shift (screen px)
 
-	// Near-plane extents from the engine's screen-space tangents.
+	// Near-plane extents from the engine's screen-space tangents. Marathon does
+	// pitch as a vertical shear of the projection (principal point shifted by
+	// dtanpitch), not an eye rotation, so bake it into the off-center frustum.
 	const float l = (-halfW / wts_x) * kZNear;
 	const float r = ( halfW / wts_x) * kZNear;
-	const float b = (-halfH / wts_y) * kZNear;
-	const float t = ( halfH / wts_y) * kZNear;
+	const float b = ((-halfH + dtp) / wts_y) * kZNear;
+	const float t = (( halfH + dtp) / wts_y) * kZNear;
 
 	D3DMATRIX projM;
 	D3DXMatrixPerspectiveOffCenterLH(reinterpret_cast<D3DXMATRIX*>(&projM),
@@ -493,6 +507,97 @@ void D3D9_DrawWorldPolygon(const D3D9_WorldVertex* verts, int count,
 
 	d3d_device->SetFVF(WORLD_FVF);
 	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, count - 2, verts, sizeof(D3D9_WorldVertex));
+}
+
+void D3D9_DrawWorldSprite(const D3D9_WorldVertex* verts, int count,
+						  IDirect3DTexture9* texture, bool blend)
+{
+	if (!d3d_device || count < 3 || count > 32 || !texture)
+		return;
+
+	d3d_device->SetTexture(0, texture);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+	d3d_device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+	d3d_device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	d3d_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+	d3d_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+
+	// No depth test/write: sprites are drawn after the world in back-to-front
+	// tree order, and their base intentionally dips into the floor.
+	d3d_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+	d3d_device->SetRenderState(D3DRS_ALPHAREF, blend ? 1 : 128);
+	d3d_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+	d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, blend ? TRUE : FALSE);
+	if (blend)
+	{
+		d3d_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+		d3d_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	}
+
+	d3d_device->SetFVF(WORLD_FVF);
+	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, count - 2, verts, sizeof(D3D9_WorldVertex));
+
+	// Restore depth for subsequent world geometry.
+	d3d_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+}
+
+// Pre-transformed textured vertex for screen-space sprites.
+struct SpriteVertex
+{
+	float x, y, z, rhw;
+	D3DCOLOR color;
+	float u, v;
+};
+static const DWORD SPRITE_FVF = D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1;
+
+void D3D9_DrawScreenSprite(float x0, float y0, float x1, float y1, float z,
+						   float u0, float v0, float u1, float v1,
+						   IDirect3DTexture9* texture, unsigned long color, bool blend)
+{
+	if (!d3d_device || !texture)
+		return;
+
+	const D3DCOLOR c = (D3DCOLOR)color;
+	const SpriteVertex quad[4] = {
+		{ x0, y0, z, 1.0f, c, u0, v0 },
+		{ x1, y0, z, 1.0f, c, u1, v0 },
+		{ x1, y1, z, 1.0f, c, u1, v1 },
+		{ x0, y1, z, 1.0f, c, u0, v1 },
+	};
+
+	d3d_device->SetTexture(0, texture);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+	d3d_device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+	d3d_device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	d3d_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+	d3d_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+
+	// Depth-test against the world; alpha-test the cutout.
+	d3d_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, blend ? FALSE : TRUE);
+	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+	d3d_device->SetRenderState(D3DRS_ALPHAREF, 128);
+	d3d_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+	d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, blend ? TRUE : FALSE);
+	if (blend)
+	{
+		d3d_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+		d3d_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	}
+
+	d3d_device->SetFVF(SPRITE_FVF);
+	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, quad, sizeof(SpriteVertex));
 }
 
 #endif // HAVE_DX9

@@ -82,6 +82,10 @@ struct IDirect3DTexture9;
 // view (origin, yaw, pitch, FOV). Call once per frame after D3D9_WorldBegin.
 void D3D9_SetViewTransforms(view_data* view);
 
+// Camera right/up/forward in world space (valid after D3D9_SetViewTransforms);
+// used to build camera-facing billboards consistent with the view matrix.
+void D3D9_GetCameraBasis(float* right, float* up, float* fwd);
+
 // A world-space textured/colored vertex.
 struct D3D9_WorldVertex
 {
@@ -94,6 +98,18 @@ struct D3D9_WorldVertex
 // texture (may be null for untextured). blend selects alpha blending.
 void D3D9_DrawWorldPolygon(const D3D9_WorldVertex* verts, int count,
 						   IDirect3DTexture9* texture, bool blend, bool alpha_test);
+
+// Draw a world-space sprite billboard (alpha-tested cutout, no depth test so
+// the floor it stands in does not clip it; tree order handles layering).
+void D3D9_DrawWorldSprite(const D3D9_WorldVertex* verts, int count,
+						  IDirect3DTexture9* texture, bool blend);
+
+// Draw a textured, alpha-tested screen-space quad (sprites/objects). Screen
+// pixel coords; z in [0,1] for depth testing against the world. uv0=top-left,
+// uv1=bottom-right corner texture coords. color = 0xAARRGGBB diffuse.
+void D3D9_DrawScreenSprite(float x0, float y0, float x1, float y1, float z,
+						   float u0, float v0, float u1, float v1,
+						   IDirect3DTexture9* texture, unsigned long color, bool blend);
 
 // Forward declaration so render code can reach the device without pulling in
 // <d3d9.h> everywhere. Defined in D3D9_Setup.cpp.
