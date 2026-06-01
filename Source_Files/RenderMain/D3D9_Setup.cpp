@@ -421,19 +421,26 @@ void D3D9_SetViewTransforms(view_data* view)
 	D3DMATRIX finalView;
 	D3DXMatrixLookAtLH(reinterpret_cast<D3DXMATRIX*>(&finalView), &eye, &at, &up);
 
-	// Projection: horizontal half-FOV from half_cone (angle units), aspect from
-	// the backbuffer. D3DXMatrixPerspectiveFovLH wants the vertical FOV, so
-	// convert via aspect.
-	const float aspect = float(present_params.BackBufferWidth) /
-						 float(present_params.BackBufferHeight ? present_params.BackBufferHeight : 1);
-	float halfConeRad = float(view->half_cone) * (float(M_PI) * 2.0f) / float(FULL_CIRCLE);
-	if (halfConeRad < 0.05f) halfConeRad = 0.05f;
-	const float fovX = 2.0f * halfConeRad;       // full horizontal FOV
-	const float fovY = 2.0f * atanf(tanf(fovX * 0.5f) / aspect);
+	// Projection: derive directly from the engine's own screen projection so the
+	// field of view matches the software/OpenGL renderers exactly. The engine
+	// projects with world_to_screen_y as the focal length over the view height,
+	// so tan(verticalHalfFOV) = half_screen_height / world_to_screen_y. Build a
+	// matching off-axis perspective (half_screen_width may differ from height *
+	// aspect, and dtanpitch shifts the vertical center).
+	const float wts_x = view->world_to_screen_x ? float(view->world_to_screen_x) : 1.0f;
+	const float wts_y = view->world_to_screen_y ? float(view->world_to_screen_y) : 1.0f;
+	const float halfW = float(view->half_screen_width);
+	const float halfH = float(view->half_screen_height);
+
+	// Near-plane extents from the engine's screen-space tangents.
+	const float l = (-halfW / wts_x) * kZNear;
+	const float r = ( halfW / wts_x) * kZNear;
+	const float b = (-halfH / wts_y) * kZNear;
+	const float t = ( halfH / wts_y) * kZNear;
 
 	D3DMATRIX projM;
-	D3DXMatrixPerspectiveFovLH(reinterpret_cast<D3DXMATRIX*>(&projM),
-							   fovY, aspect, kZNear, kZFar);
+	D3DXMatrixPerspectiveOffCenterLH(reinterpret_cast<D3DXMATRIX*>(&projM),
+									 l, r, b, t, kZNear, kZFar);
 
 	D3DMATRIX ident;
 	D3DXMatrixIdentity(reinterpret_cast<D3DXMATRIX*>(&ident));
@@ -452,7 +459,9 @@ void D3D9_DrawWorldPolygon(const D3D9_WorldVertex* verts, int count,
 	d3d_device->SetTexture(0, texture);
 	if (texture)
 	{
-		d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1); // DEBUG: texture only
+		// texture * per-vertex light (diffuse). The software/OpenGL renderers
+		// are fairly dark with strong depth falloff, so plain MODULATE matches.
+		d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
 		d3d_device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
 		d3d_device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
 		d3d_device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);

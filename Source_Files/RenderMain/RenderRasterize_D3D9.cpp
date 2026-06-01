@@ -37,20 +37,53 @@
 #include "Logging.h"
 
 #include <d3d9.h>
-#include <windows.h>
-#include <cstdio>
+#include <cmath>
 
-// Convert a light intensity (_fixed, 0..FIXED_ONE) to a packed 0xAARRGGBB gray
-// diffuse color used to bake static lighting into the vertices.
-static unsigned long intensity_color(float intensity)
+// DEPTH_TO_SHADE from scottish_textures.cpp: how fast brightness falls off with
+// distance into the view.
+#define DEPTH_TO_SHADE(d) (((_fixed)(d))<<(FIXED_FRACTIONAL_BITS-WORLD_FRACTIONAL_BITS-3))
+
+// Compute the final per-vertex brightness (0xAARRGGBB gray) the way the
+// software renderer's calculate_shading_table does: combine the surface's
+// ambient shade with a depth-cued shade (darker farther from the viewer), so
+// surfaces gradient-shade like classic Marathon instead of looking flat.
+//   ambient_shade: the surface light (_fixed; negative means shadeless/fixed)
+//   depth: world distance from the viewer to this vertex
+static unsigned long shaded_vertex_color(view_data* view, _fixed ambient_shade, double depth)
 {
-	if (intensity < 0.0f) intensity = 0.0f;
-	if (intensity > 1.0f) intensity = 1.0f;
-	int v = int(intensity * 255.0f + 0.5f);
+	_fixed final_shade;
+	if (ambient_shade < 0)
+	{
+		final_shade = -ambient_shade; // shadeless: use ambient magnitude directly
+	}
+	else
+	{
+		_fixed shade = view->maximum_depth_intensity - DEPTH_TO_SHADE((short)depth);
+		if (shade < 0) shade = 0;
+		if (shade > FIXED_ONE) shade = FIXED_ONE;
+		// i0 + i1 == MAX(i0,i1) + MIN(i0,i1)/2
+		final_shade = (ambient_shade > shade) ? (ambient_shade + (shade >> 1))
+											  : (shade + (ambient_shade >> 1));
+	}
+	if (final_shade < 0) final_shade = 0;
+	if (final_shade > FIXED_ONE) final_shade = FIXED_ONE;
+
+	// Linear shade; brightness scaled by MODULATE2X in the texture stage.
+	int v = (int)(((double)final_shade / (double)FIXED_ONE) * 255.0 + 0.5);
+	if (v < 0) v = 0; if (v > 255) v = 255;
 	return 0xff000000u |
 		   (static_cast<unsigned long>(v) << 16) |
 		   (static_cast<unsigned long>(v) << 8) |
 		   static_cast<unsigned long>(v);
+}
+
+// Distance from the viewer to a world point (for depth cueing).
+static double vertex_depth(view_data* view, double x, double y, double z)
+{
+	double dx = x - view->origin.x;
+	double dy = y - view->origin.y;
+	double dz = z - view->origin.z;
+	return sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 // Set up a TextureManager for a wall/floor/ceiling texture, mirroring
@@ -120,8 +153,7 @@ void RenderRasterize_D3D9::render_node_floor_or_ceiling(clipping_window_data* /*
 	if (!tex)
 		return; // texture setup failed; TMgr fields (TileRatio etc.) are invalid
 
-	float intensity = get_light_intensity(surface->lightsource_index) / float(FIXED_ONE - 1);
-	unsigned long color = intensity_color(intensity);
+	_fixed ambient = get_light_intensity(surface->lightsource_index);
 
 	float scale = float(WORLD_ONE) * TMgr.TileRatio();
 	if (scale == 0.0f) scale = float(WORLD_ONE);
@@ -140,7 +172,8 @@ void RenderRasterize_D3D9::render_node_floor_or_ceiling(clipping_window_data* /*
 		verts[i].x = float(vertex.x);
 		verts[i].y = float(vertex.y);
 		verts[i].z = float(surface->height);
-		verts[i].color = color;
+		verts[i].color = shaded_vertex_color(view, ambient,
+			vertex_depth(view, vertex.x, vertex.y, surface->height));
 		// Marathon textures are stored rotated; swap U/V vs the world axes.
 		verts[i].v = (float(vertex.x) + float(surface->origin.x)) / scale;
 		verts[i].u = (float(vertex.y) + float(surface->origin.y)) / scale;
@@ -172,9 +205,7 @@ void RenderRasterize_D3D9::render_node_side(clipping_window_data* /*window*/,
 	if (!tex)
 		return; // texture setup failed; TMgr fields are invalid
 
-	float intensity = (get_light_intensity(surface->lightsource_index) + surface->ambient_delta)
-					  / float(FIXED_ONE - 1);
-	unsigned long color = intensity_color(intensity);
+	_fixed ambient = get_light_intensity(surface->lightsource_index) + surface->ambient_delta;
 
 	float div = float(WORLD_ONE) * TMgr.TileRatio();
 	if (surface->transfer_mode == _xfer_2x) div = 2 * float(WORLD_ONE) * TMgr.TileRatio();
@@ -225,7 +256,8 @@ void RenderRasterize_D3D9::render_node_side(clipping_window_data* /*window*/,
 	verts[3].v = vL; verts[3].u = (tOffset - zb) / div;
 
 	for (int i = 0; i < 4; ++i)
-		verts[i].color = color;
+		verts[i].color = shaded_vertex_color(view, ambient,
+			vertex_depth(view, verts[i].x, verts[i].y, verts[i].z));
 
 	bool blended = tex && TMgr.IsBlended();
 	D3D9_DrawWorldPolygon(verts, 4, tex, blended, blended);
