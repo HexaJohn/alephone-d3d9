@@ -315,13 +315,16 @@ void RenderRasterize_D3D9::render_node_object(render_object_data* object,
 	double wl = rect.WorldLeft, wr = rect.WorldRight;   // horizontal extents
 	double wt = rect.WorldTop, wb = rect.WorldBottom;   // vertical extents (z), engine-exact
 
-	// UV: our D3D9 texture is the exact decoded sprite size (NOT power-of-two
-	// padded like the OpenGL path), so the sprite spans the full 0..1 range, not
-	// 0..U_Scale. Marathon sprites are stored rotated; flip-aware.
-	float uMin = rect.flip_vertical   ? 1.0f : 0.0f;
-	float uMax = rect.flip_vertical   ? 0.0f : 1.0f;
-	float vMin = rect.flip_horizontal ? 1.0f : 0.0f;
-	float vMax = rect.flip_horizontal ? 0.0f : 1.0f;
+	// The decoded sprite occupies a sub-rectangle of a power-of-two-padded
+	// texture: texcoord = U_Offset + U_Scale*frac (OpenGL convention). Map the
+	// quad to that sub-rect so the sprite fills the billboard. Marathon sprites
+	// are stored rotated, so screen-vertical = texture U, screen-horizontal = V.
+	float uLo = (float)TMgr.U_Offset, uHi = (float)(TMgr.U_Offset + TMgr.U_Scale);
+	float vLo = (float)TMgr.V_Offset, vHi = (float)(TMgr.V_Offset + TMgr.V_Scale);
+	float uMin = rect.flip_vertical   ? uHi : uLo;
+	float uMax = rect.flip_vertical   ? uLo : uHi;
+	float vMin = rect.flip_horizontal ? vHi : vLo;
+	float vMax = rect.flip_horizontal ? vLo : vHi;
 
 	unsigned long color = shaded_vertex_color(view, rect.ambient_shade, depth);
 
