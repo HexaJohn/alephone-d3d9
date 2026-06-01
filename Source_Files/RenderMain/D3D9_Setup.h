@@ -86,6 +86,10 @@ void D3D9_SetViewTransforms(view_data* view);
 // used to build camera-facing billboards consistent with the view matrix.
 void D3D9_GetCameraBasis(float* right, float* up, float* fwd);
 
+// Backbuffer dimensions (for scaling screen-space coordinates).
+int D3D9_BackbufferWidth();
+int D3D9_BackbufferHeight();
+
 // A world-space textured/colored vertex.
 struct D3D9_WorldVertex
 {
@@ -110,6 +114,13 @@ void D3D9_DrawWorldSprite(const D3D9_WorldVertex* verts, int count,
 void D3D9_DrawScreenSprite(float x0, float y0, float x1, float y1, float z,
 						   float u0, float v0, float u1, float v1,
 						   IDirect3DTexture9* texture, unsigned long color, bool blend);
+
+// Like D3D9_DrawScreenSprite but with explicit per-corner texture coords
+// (8 floats: TL.u,TL.v, TR.u,TR.v, BR.u,BR.v, BL.u,BL.v) so the texture can be
+// rotated/transposed (sprite atlases store frames rotated).
+void D3D9_DrawScreenSpriteUV(float x0, float y0, float x1, float y1, float z,
+							 const float* uv, IDirect3DTexture9* texture,
+							 unsigned long color, bool blend);
 
 // Forward declaration so render code can reach the device without pulling in
 // <d3d9.h> everywhere. Defined in D3D9_Setup.cpp.

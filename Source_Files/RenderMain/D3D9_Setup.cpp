@@ -406,6 +406,9 @@ void D3D9_GetCameraBasis(float* right, float* up, float* fwd)
 	for (int i = 0; i < 3; ++i) { right[i] = g_cam_right[i]; up[i] = g_cam_up[i]; fwd[i] = g_cam_fwd[i]; }
 }
 
+int D3D9_BackbufferWidth() { return (int)present_params.BackBufferWidth; }
+int D3D9_BackbufferHeight() { return (int)present_params.BackBufferHeight; }
+
 void D3D9_SetViewTransforms(view_data* view)
 {
 	if (!d3d_device || !view)
@@ -585,6 +588,48 @@ void D3D9_DrawScreenSprite(float x0, float y0, float x1, float y1, float z,
 	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
 
 	// Depth-test against the world; alpha-test the cutout.
+	d3d_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, blend ? FALSE : TRUE);
+	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
+	d3d_device->SetRenderState(D3DRS_ALPHAREF, 128);
+	d3d_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+	d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, blend ? TRUE : FALSE);
+	if (blend)
+	{
+		d3d_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+		d3d_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	}
+
+	d3d_device->SetFVF(SPRITE_FVF);
+	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, quad, sizeof(SpriteVertex));
+}
+
+void D3D9_DrawScreenSpriteUV(float x0, float y0, float x1, float y1, float z,
+							 const float* uv /* 8 floats: TL,TR,BR,BL */,
+							 IDirect3DTexture9* texture, unsigned long color, bool blend)
+{
+	if (!d3d_device || !texture)
+		return;
+
+	const D3DCOLOR c = (D3DCOLOR)color;
+	const SpriteVertex quad[4] = {
+		{ x0, y0, z, 1.0f, c, uv[0], uv[1] }, // TL
+		{ x1, y0, z, 1.0f, c, uv[2], uv[3] }, // TR
+		{ x1, y1, z, 1.0f, c, uv[4], uv[5] }, // BR
+		{ x0, y1, z, 1.0f, c, uv[6], uv[7] }, // BL
+	};
+
+	d3d_device->SetTexture(0, texture);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	d3d_device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+	d3d_device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+	d3d_device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	d3d_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+	d3d_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+
 	d3d_device->SetRenderState(D3DRS_ZENABLE, TRUE);
 	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, blend ? FALSE : TRUE);
 	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);

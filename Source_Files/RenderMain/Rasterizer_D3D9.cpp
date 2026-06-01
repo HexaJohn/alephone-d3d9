@@ -27,6 +27,8 @@
 
 #include "Rasterizer_D3D9.h"
 #include "D3D9_Setup.h"
+#include "D3D9_Textures.h"
+#include "OGL_Textures.h"
 #include "scottish_textures.h"
 
 // Map the engine's ambient shade (a _fixed, 0..FIXED_ONE) to a 0..255 gray so
@@ -94,18 +96,62 @@ void Rasterizer_D3D9_Class::texture_vertical_polygon(polygon_definition& texture
 	draw_polygon(textured_polygon, false);
 }
 
-void Rasterizer_D3D9_Class::texture_rectangle(rectangle_definition& textured_rectangle)
+void Rasterizer_D3D9_Class::texture_rectangle(rectangle_definition& r)
 {
-	// Sprites / objects: draw the screen-space bounding rect as a flat quad for
-	// now (textured sprites come in a later step).
-	rectangle_definition& r = textured_rectangle;
-	D3D9_ScreenPoint pts[4] = {
-		{ static_cast<float>(r.x0), static_cast<float>(r.y0) },
-		{ static_cast<float>(r.x1), static_cast<float>(r.y0) },
-		{ static_cast<float>(r.x1), static_cast<float>(r.y1) },
-		{ static_cast<float>(r.x0), static_cast<float>(r.y1) },
+	// Foreground sprite (weapon-in-hand): the engine supplies a screen-space
+	// rect (depth 0). Draw it as a textured screen-space quad on top of the
+	// world, no depth test.
+	TextureManager TMgr;
+	TMgr.ShapeDesc = r.ShapeDesc;
+	TMgr.LowLevelShape = r.LowLevelShape;
+	TMgr.ShadingTables = r.shading_tables;
+	TMgr.Texture = r.texture;
+	TMgr.TransferMode = r.transfer_mode;
+	TMgr.TransferData = r.transfer_data;
+	TMgr.IsShadeless = (r.flags & _SHADELESS_BIT) != 0;
+	TMgr.TextureType = OGL_Txtr_WeaponsInHand;
+	if (!TMgr.Setup())
+		return;
+	IDirect3DTexture9* tex = D3D9_GetTexture(TMgr);
+	if (!tex)
+		return;
+
+	// The weapon rect is in the engine view's coordinate space (view->screen_*),
+	// which can differ from the backbuffer size; scale to backbuffer pixels.
+	float sx = 1.0f, sy = 1.0f;
+	if (view && view->screen_width > 0 && view->screen_height > 0)
+	{
+		sx = (float)D3D9_BackbufferWidth() / (float)view->screen_width;
+		sy = (float)D3D9_BackbufferHeight() / (float)view->screen_height;
+	}
+	float L = r.x0 * sx, T = r.y0 * sy, R = r.x1 * sx, B = r.y1 * sy;
+	if (R <= L || B <= T)
+		return;
+
+	// Texture occupies a sub-rect of a power-of-two atlas; sprites are stored
+	// rotated (screen-vertical = texture U, screen-horizontal = texture V).
+	float uLo = (float)TMgr.U_Offset, uHi = (float)(TMgr.U_Offset + TMgr.U_Scale);
+	float vLo = (float)TMgr.V_Offset, vHi = (float)(TMgr.V_Offset + TMgr.V_Scale);
+	float uMin = r.flip_vertical   ? uHi : uLo;
+	float uMax = r.flip_vertical   ? uLo : uHi;
+	float vMin = r.flip_horizontal ? vHi : vLo;
+	float vMax = r.flip_horizontal ? vLo : vHi;
+
+	// Brightness from ambient shade (no depth cue for the foreground weapon).
+	int sv = r.ambient_shade >> 8;
+	if (sv < 0) sv = 0; if (sv > 255) sv = 255;
+	unsigned long color = 0xff000000u | (sv << 16) | (sv << 8) | sv;
+
+	bool blended = TMgr.IsBlended();
+	// Per-corner UVs matching the (working) world-sprite mapping: screen-vertical
+	// follows texture U, screen-horizontal follows texture V. TL,TR,BR,BL.
+	const float uv[8] = {
+		uMin, vMin,  // TL
+		uMin, vMax,  // TR
+		uMax, vMax,  // BR
+		uMax, vMin,  // BL
 	};
-	D3D9_DrawScreenPolygon(pts, 4, shade_to_gray(r.ambient_shade));
+	D3D9_DrawScreenSpriteUV(L, T, R, B, 0.0f, uv, tex, color, blended);
 }
 
 #endif // HAVE_DX9
