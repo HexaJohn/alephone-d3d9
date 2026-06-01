@@ -526,9 +526,10 @@ void D3D9_DrawWorldSprite(const D3D9_WorldVertex* verts, int count,
 	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
 	d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
 
-	// No depth test/write: sprites are drawn after the world in back-to-front
-	// tree order, and their base intentionally dips into the floor.
-	d3d_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+	// Depth test ON so walls in front of the sprite occlude it correctly, but
+	// depth write OFF so the billboard's base dipping into the floor doesn't
+	// z-fight and sprites don't occlude each other (they arrive back-to-front).
+	d3d_device->SetRenderState(D3DRS_ZENABLE, TRUE);
 	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
 	d3d_device->SetRenderState(D3DRS_ALPHAREF, blend ? 1 : 128);
