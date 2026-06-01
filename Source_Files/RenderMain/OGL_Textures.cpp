@@ -515,7 +515,7 @@ bool TextureManager::Setup()
 		// Try to load a substitute texture, and if that fails,
 		// get the geometry from the shapes bitmap.
 		bool substitute = LoadSubstituteTexture();
-		if (!substitute) 
+		if (!substitute)
 			if (!SetupTextureGeometry()) return false;
 
 		// Store sprite scale/offset
@@ -525,7 +525,7 @@ bool TextureManager::Setup()
 		CTState.V_Offset = V_Offset;
 
 		// This finding of color tables sets the glow state
-		if (!substitute) 
+		if (!substitute)
 			FindColorTables();
 		else if (GlowImage.get() && GlowImage.get()->IsPresent()) {
 			// Override if textures had been substituted;
@@ -538,7 +538,7 @@ bool TextureManager::Setup()
 		}
 		
 		CTState.IsGlowing = IsGlowing;
-		
+
 		if (substitute && OffsetImage.get() && OffsetImage.get()->IsPresent()) {
 			CTState.IsBumped = true;
 		} else {
@@ -565,8 +565,11 @@ bool TextureManager::Setup()
 		int MaxHeight = MAX(TxtrHeight >> TxtrTypeInfo.Resolution, 1);
 		
 		// Fit the image into the maximum size allowed by the OpenGL implementation in use
-		GLint MaxTextureSize;
-		glGetIntegerv(GL_MAX_TEXTURE_SIZE,&MaxTextureSize);
+		GLint MaxTextureSize = 4096;
+		if (MainScreenIsOpenGL())
+			glGetIntegerv(GL_MAX_TEXTURE_SIZE,&MaxTextureSize);
+		if (MaxTextureSize <= 0)
+			MaxTextureSize = 4096; // no GL context (e.g. Direct3D 9 backend)
 		while (MaxWidth > MaxTextureSize || MaxHeight > MaxTextureSize)
 		{
 			LoadedWidth >>= 1;

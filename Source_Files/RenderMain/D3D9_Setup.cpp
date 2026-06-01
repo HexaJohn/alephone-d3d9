@@ -26,11 +26,15 @@
 #ifdef HAVE_DX9
 
 #include <d3d9.h>
+#include <d3dx9math.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
+#include <cmath>
 
 #include "Logging.h"
 #include "D3D9_Setup.h"
+#include "render.h"
+#include "world.h"		// WORLD_ONE, trig tables, angles
 
 // The single device and the D3D object that created it. The backend is a
 // singleton (the engine renders one main view), mirroring how OGL_* keeps
@@ -335,14 +339,14 @@ bool D3D9_WorldBegin()
 	if (FAILED(d3d_device->BeginScene()))
 		return false;
 
-	// Fixed-function, no lighting/culling, depth off for now (polygons arrive
-	// pre-sorted back-to-front from the engine's render tree).
+	// Fixed-function, no lighting (baked per-vertex), no backface cull (engine
+	// already culls), depth test on for correct 3D occlusion.
 	d3d_device->SetRenderState(D3DRS_LIGHTING, FALSE);
 	d3d_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-	d3d_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ZENABLE, TRUE);
+	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
 	d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
 	d3d_device->SetTexture(0, nullptr);
-	d3d_device->SetFVF(WORLD_SCREEN_FVF);
 	return true;
 }
 
@@ -379,6 +383,107 @@ void D3D9_DrawScreenPolygon(const D3D9_ScreenPoint* points, int count, unsigned 
 
 	// Convex polygon -> triangle fan.
 	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, count - 2, verts, sizeof(WorldScreenVertex));
+}
+
+// --- True 3D world rendering ---
+
+// Marathon world coordinates: x,y horizontal, z up; yaw measured CCW around z.
+// We build a left-handed view matrix that maps world -> eye (eye looks down +z
+// in D3D LH convention) and a perspective projection from the engine's view
+// cone, with depth in [0,1].
+
+static const float kZNear = 50.0f;
+static const float kZFar = 1.5f * 64 * WORLD_ONE;
+static const DWORD WORLD_FVF = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1;
+
+void D3D9_SetViewTransforms(view_data* view)
+{
+	if (!d3d_device || !view)
+		return;
+
+	const double TrigRecip = 1.0 / double(TRIG_MAGNITUDE);
+	const float cosy = float(TrigRecip * cosine_table[view->yaw]);
+	const float siny = float(TrigRecip * sine_table[view->yaw]);
+
+	// Marathon world: x,y horizontal, z up. View direction in the horizontal
+	// plane is (cosy, siny). Pitch tilts up/down: dtanpitch = world_to_screen_y
+	// * tan(pitch), so the vertical slope of the forward vector is
+	// dtanpitch/world_to_screen_y.
+	float vslope = 0.0f;
+	if (view->world_to_screen_y != 0)
+		vslope = float(view->dtanpitch) / float(view->world_to_screen_y);
+
+	D3DXVECTOR3 eye(float(view->origin.x), float(view->origin.y), float(view->origin.z));
+	D3DXVECTOR3 fwd(cosy, siny, vslope);
+	D3DXVECTOR3 at(eye.x + fwd.x, eye.y + fwd.y, eye.z + fwd.z);
+	D3DXVECTOR3 up(0.0f, 0.0f, 1.0f); // world z-up
+
+	D3DMATRIX finalView;
+	D3DXMatrixLookAtLH(reinterpret_cast<D3DXMATRIX*>(&finalView), &eye, &at, &up);
+
+	// Projection: horizontal half-FOV from half_cone (angle units), aspect from
+	// the backbuffer. D3DXMatrixPerspectiveFovLH wants the vertical FOV, so
+	// convert via aspect.
+	const float aspect = float(present_params.BackBufferWidth) /
+						 float(present_params.BackBufferHeight ? present_params.BackBufferHeight : 1);
+	float halfConeRad = float(view->half_cone) * (float(M_PI) * 2.0f) / float(FULL_CIRCLE);
+	if (halfConeRad < 0.05f) halfConeRad = 0.05f;
+	const float fovX = 2.0f * halfConeRad;       // full horizontal FOV
+	const float fovY = 2.0f * atanf(tanf(fovX * 0.5f) / aspect);
+
+	D3DMATRIX projM;
+	D3DXMatrixPerspectiveFovLH(reinterpret_cast<D3DXMATRIX*>(&projM),
+							   fovY, aspect, kZNear, kZFar);
+
+	D3DMATRIX ident;
+	D3DXMatrixIdentity(reinterpret_cast<D3DXMATRIX*>(&ident));
+
+	d3d_device->SetTransform(D3DTS_WORLD, &ident);
+	d3d_device->SetTransform(D3DTS_VIEW, &finalView);
+	d3d_device->SetTransform(D3DTS_PROJECTION, &projM);
+}
+
+void D3D9_DrawWorldPolygon(const D3D9_WorldVertex* verts, int count,
+						   IDirect3DTexture9* texture, bool blend, bool alpha_test)
+{
+	if (!d3d_device || count < 3 || count > 32)
+		return;
+
+	d3d_device->SetTexture(0, texture);
+	if (texture)
+	{
+		d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1); // DEBUG: texture only
+		d3d_device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+		d3d_device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+		d3d_device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+		d3d_device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+		d3d_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+		d3d_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+		d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+		d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+	}
+	else
+	{
+		d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
+		d3d_device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+		d3d_device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	}
+
+	d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, blend ? TRUE : FALSE);
+	if (blend)
+	{
+		d3d_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+		d3d_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	}
+	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, alpha_test ? TRUE : FALSE);
+	if (alpha_test)
+	{
+		d3d_device->SetRenderState(D3DRS_ALPHAREF, blend ? 1 : 128);
+		d3d_device->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
+	}
+
+	d3d_device->SetFVF(WORLD_FVF);
+	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, count - 2, verts, sizeof(D3D9_WorldVertex));
 }
 
 #endif // HAVE_DX9

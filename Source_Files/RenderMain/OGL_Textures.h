@@ -262,6 +262,10 @@ public:
 	
 	// What to render:
 	
+	// Access the converted RGBA image after Setup() (for non-OpenGL backends,
+	// e.g. the Direct3D 9 renderer). Valid only once Setup() has succeeded.
+	const ImageDescriptor* GetNormalImage() { return NormalImage.get(); }
+
 	// Always call this one and call it first; safe to allocate texture ID's in it
 	void RenderNormal();
 	// Call this one after RenderNormal()

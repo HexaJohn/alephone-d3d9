@@ -73,6 +73,28 @@ void D3D9_WorldEnd();
 struct D3D9_ScreenPoint { float x, y; };
 void D3D9_DrawScreenPolygon(const D3D9_ScreenPoint* points, int count, unsigned long rgb);
 
+// --- True 3D world rendering (RenderRasterize_D3D9) ---
+
+struct view_data;
+struct IDirect3DTexture9;
+
+// Build and set the D3D9 world/view/projection transforms from the engine
+// view (origin, yaw, pitch, FOV). Call once per frame after D3D9_WorldBegin.
+void D3D9_SetViewTransforms(view_data* view);
+
+// A world-space textured/colored vertex.
+struct D3D9_WorldVertex
+{
+	float x, y, z;     // world position
+	unsigned long color; // 0xAARRGGBB diffuse (lighting baked per-vertex)
+	float u, v;        // texture coordinates
+};
+
+// Draw a convex polygon (triangle fan) of world-space vertices with the given
+// texture (may be null for untextured). blend selects alpha blending.
+void D3D9_DrawWorldPolygon(const D3D9_WorldVertex* verts, int count,
+						   IDirect3DTexture9* texture, bool blend, bool alpha_test);
+
 // Forward declaration so render code can reach the device without pulling in
 // <d3d9.h> everywhere. Defined in D3D9_Setup.cpp.
 struct IDirect3DDevice9* D3D9_Device();

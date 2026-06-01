@@ -4149,7 +4149,11 @@ static void default_graphics_preferences(graphics_preferences_data *preferences)
 	preferences->screen_mode.hud_scale_level = 0;
 	preferences->screen_mode.term_scale_level = 2;
 	preferences->screen_mode.translucent_map = false;
+#ifdef HAVE_DX9
+	preferences->screen_mode.acceleration = _direct3d_acceleration;
+#else
 	preferences->screen_mode.acceleration = _opengl_acceleration;
+#endif
 	preferences->screen_mode.high_resolution = true;
 	preferences->screen_mode.fullscreen = true;
 	preferences->screen_mode.fix_h_not_v = true;
@@ -4343,7 +4347,12 @@ static bool validate_graphics_preferences(graphics_preferences_data *preferences
 		changed= true;
 	}
 
-	if (preferences->screen_mode.acceleration != _no_acceleration && preferences->screen_mode.acceleration != _opengl_acceleration)
+	if (preferences->screen_mode.acceleration != _no_acceleration &&
+		preferences->screen_mode.acceleration != _opengl_acceleration
+#ifdef HAVE_DX9
+		&& preferences->screen_mode.acceleration != _direct3d_acceleration
+#endif
+		)
 		preferences->screen_mode.acceleration = _opengl_acceleration;
 
 	// OpenGL requires at least 16 bit color depth

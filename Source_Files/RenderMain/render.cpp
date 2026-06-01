@@ -237,6 +237,7 @@ extern WindowPtr screen_window;
 #include "D3D9_Setup.h"
 #ifdef HAVE_DX9
 #include "Rasterizer_D3D9.h"
+#include "RenderRasterize_D3D9.h"
 #endif
 #ifdef HAVE_OPENGL
 #include "Rasterizer_OGL.h"
@@ -296,6 +297,7 @@ static RenderRasterizerClass Render_Classic;		// Clipping and rasterization clas
 static Rasterizer_SW_Class Rasterizer_SW;			// Software rasterizer
 #ifdef HAVE_DX9
 static Rasterizer_D3D9_Class Rasterizer_D3D9;		// Direct3D 9 fixed-function rasterizer
+static RenderRasterize_D3D9 Render_D3D9;			// Direct3D 9 clipping/rasterization class
 #endif
 #ifdef HAVE_OPENGL
 static Rasterizer_OGL_Class Rasterizer_OGL;			// OpenGL rasterizer
@@ -361,11 +363,14 @@ void allocate_render_memory(
 	RenderSortPoly.RVPtr = &RenderVisTree;
 	RenderPlaceObjs.RVPtr = &RenderVisTree;
 	RenderPlaceObjs.RSPtr = &RenderSortPoly;
-#ifdef HAVE_OPENGL	
+#ifdef HAVE_OPENGL
 	Render_Classic.RSPtr = Render_Shader.RSPtr = &RenderSortPoly;
 #else
-	Render_Classic.RSPtr = &RenderSortPoly;	
-#endif	
+	Render_Classic.RSPtr = &RenderSortPoly;
+#endif
+#ifdef HAVE_DX9
+	Render_D3D9.RSPtr = &RenderSortPoly;
+#endif
 }
 
 /* just in case anyone was wondering, standard_screen_width will usually be the same as
@@ -495,11 +500,18 @@ void render_view(
 			RasPtr->Begin();
 
 			// LP: now from the clipping/rasterizer class
-#ifdef HAVE_OPENGL
-			RenderRasterizerClass *RenPtr = (graphics_preferences->screen_mode.acceleration == _opengl_acceleration) ? &Render_Shader : &Render_Classic;
-#else
-			RenderRasterizerClass *RenPtr = &Render_Classic;
+			RenderRasterizerClass *RenPtr;
+#ifdef HAVE_DX9
+			if (D3D9_IsActive())
+				RenPtr = &Render_D3D9;
+			else
 #endif
+#ifdef HAVE_OPENGL
+			if (graphics_preferences->screen_mode.acceleration == _opengl_acceleration)
+				RenPtr = &Render_Shader;
+			else
+#endif
+				RenPtr = &Render_Classic;
 			/* render the object list, back to front, doing clipping on each surface before passing
 				it to the texture-mapping code */
 			RenPtr->view = view;
