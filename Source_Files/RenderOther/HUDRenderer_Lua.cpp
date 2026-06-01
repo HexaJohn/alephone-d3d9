@@ -36,7 +36,24 @@ HUD_RENDERER_LUA.CPP
 #include "OGL_Render.h"
 #endif
 
+#ifdef HAVE_DX9
+#include "D3D9_Setup.h"
+#endif
+
 #include <math.h>
+
+#ifdef HAVE_DX9
+// Pack 4 floats [0,1] into 0xAARRGGBB for the D3D9 HUD primitives.
+static inline unsigned long d3d_argb(float r, float g, float b, float a)
+{
+	auto c = [](float v) -> unsigned long {
+		int i = (int)(v * 255.0f + 0.5f);
+		if (i < 0) i = 0; if (i > 255) i = 255;
+		return (unsigned long)i;
+	};
+	return (c(a) << 24) | (c(r) << 16) | (c(g) << 8) | c(b);
+}
+#endif
 
 extern bool MotionSensorActive;
 
@@ -103,12 +120,21 @@ void HUD_Lua_Class::start_draw(void)
 	alephone::Screen *scr = alephone::Screen::instance();
 	scr->bound_screen();
     m_wr = scr->window_rect();
-	// Only the real OpenGL backend draws the Lua HUD with GL calls. The Direct3D
-	// 9 backend has no GL context, so it must use the software path (draw into
-	// the SDL surface); render_screen then composites that over the D3D9 world.
+	// OpenGL draws the Lua HUD with GL calls; Direct3D 9 draws it as GPU quads
+	// straight to the backbuffer (D3D9_* HUD primitives); software draws into an
+	// SDL surface that render_screen composites over the world.
 	m_opengl = (get_screen_mode()->acceleration == _opengl_acceleration);
+	m_d3d9 = (get_screen_mode()->acceleration == _direct3d_acceleration);
 	m_masking_mode = _mask_disabled;
-	
+
+#ifdef HAVE_DX9
+	if (m_d3d9)
+	{
+		D3D9_HUDBegin();
+		m_surface = NULL;
+	}
+	else
+#endif
 #ifdef HAVE_OPENGL
 	if (m_opengl)
 	{
@@ -154,7 +180,14 @@ void HUD_Lua_Class::start_draw(void)
 void HUD_Lua_Class::end_draw(void)
 {
 	m_drawing = false;
-	
+
+#ifdef HAVE_DX9
+	if (m_d3d9)
+	{
+		D3D9_HUDEnd();
+		return;
+	}
+#endif
 #ifdef HAVE_OPENGL
 	if (m_opengl)
 	{
@@ -174,6 +207,13 @@ void HUD_Lua_Class::apply_clip(void)
     r.y = m_wr.y + scr->lua_clip_rect.y;
     r.w = MIN(scr->lua_clip_rect.w, m_wr.w - scr->lua_clip_rect.x);
     r.h = MIN(scr->lua_clip_rect.h, m_wr.h - scr->lua_clip_rect.y);
+#ifdef HAVE_DX9
+	if (m_d3d9)
+	{
+		D3D9_SetScissor(r.x, r.y, r.w, r.h);
+		return;
+	}
+#endif
 #ifdef HAVE_OPENGL
 	if (m_opengl)
 	{
@@ -291,6 +331,14 @@ void HUD_Lua_Class::fill_rect(float x, float y, float w, float h,
 		return;
 	
 	apply_clip();
+#ifdef HAVE_DX9
+	if (m_d3d9)
+	{
+		D3D9_DrawColorQuad(x + m_wr.x, y + m_wr.y, w, h, d3d_argb(r, g, b, a));
+		D3D9_DisableScissor();
+		return;
+	}
+#endif
 #ifdef HAVE_OPENGL
 	if (m_opengl)
 	{
@@ -311,7 +359,7 @@ void HUD_Lua_Class::fill_rect(float x, float y, float w, float h,
 		SDL_BlitSurface(m_surface, &rect, MainScreenSurface(), &rect);
 		SDL_SetClipRect(MainScreenSurface(), NULL);
 	}
-}	
+}
 
 void HUD_Lua_Class::frame_rect(float x, float y, float w, float h,
 												 			 float r, float g, float b, float a,
@@ -321,6 +369,19 @@ void HUD_Lua_Class::frame_rect(float x, float y, float w, float h,
 		return;
 		
 	apply_clip();
+#ifdef HAVE_DX9
+	if (m_d3d9)
+	{
+		unsigned long col = d3d_argb(r, g, b, a);
+		float ox = x + m_wr.x, oy = y + m_wr.y;
+		D3D9_DrawColorQuad(ox, oy, w, t, col);                 // top
+		D3D9_DrawColorQuad(ox, oy + h - t, w, t, col);         // bottom
+		D3D9_DrawColorQuad(ox, oy + t, t, h - t - t, col);     // left
+		D3D9_DrawColorQuad(ox + w - t, oy + t, t, h - t - t, col); // right
+		D3D9_DisableScissor();
+		return;
+	}
+#endif
 #ifdef HAVE_OPENGL
 	if (m_opengl)
 	{
@@ -373,6 +434,18 @@ void HUD_Lua_Class::draw_text(FontSpecifier *font, const char *text,
 		return;
 	
 	apply_clip();
+#ifdef HAVE_DX9
+	if (m_d3d9)
+	{
+		// OpenGL draws from baseline at (x, y + Height*scale); our D3D9_Render
+		// takes the text top, placing the baseline at top + Ascent*scale. Match
+		// OpenGL's baseline.
+		float top = y + (font->Height - font->Ascent) * scale;
+		font->D3D9_Render(text, x + m_wr.x, top + m_wr.y, scale, d3d_argb(r, g, b, a));
+		D3D9_DisableScissor();
+		return;
+	}
+#endif
 #ifdef HAVE_OPENGL
 	if (m_opengl)
 	{
@@ -452,12 +525,15 @@ void HUD_Lua_Class::draw_image(Image_Blitter *image, float x, float y)
 		return;
 
 	apply_clip();
-    if (m_surface)
+    if (m_surface || m_d3d9)
     {
         r.x += m_wr.x;
         r.y += m_wr.y;
     }
-	image->Draw(MainScreenSurface(), r);
+	image->Draw(MainScreenSurface(), r);   // D3D9_Blitter ignores the surface
+#ifdef HAVE_DX9
+	if (m_d3d9) { D3D9_DisableScissor(); return; }
+#endif
 	SDL_SetClipRect(MainScreenSurface(), NULL);
 }
 
@@ -476,6 +552,16 @@ void HUD_Lua_Class::draw_shape(Shape_Blitter *shape, float x, float y)
 		return;
     
 	apply_clip();
+#ifdef HAVE_DX9
+	if (m_d3d9)
+	{
+		r.x += m_wr.x;
+		r.y += m_wr.y;
+		shape->D3D9_Draw(r);
+		D3D9_DisableScissor();
+		return;
+	}
+#endif
 #ifdef HAVE_OPENGL
     if (m_opengl)
     {

@@ -153,6 +153,30 @@ void D3D9_DrawScreenSpriteUV(float x0, float y0, float x1, float y1, float z,
 							 const float* uv, IDirect3DTexture9* texture,
 							 unsigned long color, bool blend);
 
+// --- GPU HUD primitives (Lua HUD drawn straight to the open backbuffer) ---
+// Screen-space XYZRHW, straight alpha blend, no depth, full viewport. Textured
+// draws MODULATE the texture by the tint color (0xAARRGGBB). Call HUDBegin once
+// before the HUD draws and HUDEnd after.
+void D3D9_HUDBegin();
+void D3D9_HUDEnd();
+void D3D9_DrawColorQuad(float x, float y, float w, float h, unsigned long argb);
+void D3D9_DrawTexturedQuad(float x, float y, float w, float h,
+						   float u0, float v0, float u1, float v1,
+						   struct IDirect3DTexture9* tex, unsigned long argb_tint);
+// Pre-built SpriteVertex (XYZRHW|DIFFUSE|TEX1) triangle list, e.g. glyph quads.
+void D3D9_DrawTexturedTris(const void* verts, int tri_count,
+						   struct IDirect3DTexture9* tex, unsigned long argb_tint);
+void D3D9_SetScissor(int x, int y, int w, int h);
+void D3D9_DisableScissor();
+// Create/refresh a MANAGED ARGB texture from a 32-bit SDL surface (cache held by
+// the caller). force_opaque ignores the surface alpha (fonts have no alpha).
+struct IDirect3DTexture9* D3D9_UploadSurfaceTexture(struct SDL_Surface* surface,
+													struct IDirect3DTexture9** cache,
+													int* cache_w, int* cache_h,
+													bool force_opaque);
+// The SpriteVertex layout for D3D9_DrawTexturedTris callers (XYZRHW|DIFFUSE|TEX1).
+struct D3D9_HUDVertex { float x, y, z, rhw; unsigned long color; float u, v; };
+
 // Forward declaration so render code can reach the device without pulling in
 // <d3d9.h> everywhere. Defined in D3D9_Setup.cpp.
 struct IDirect3DDevice9* D3D9_Device();

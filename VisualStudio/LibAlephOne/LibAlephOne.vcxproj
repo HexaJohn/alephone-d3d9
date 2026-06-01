@@ -568,6 +568,7 @@
     <ClCompile Include="..\..\Source_Files\RenderMain\Crosshairs_SDL.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\ImageLoader_SDL.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\ImageLoader_Shared.cpp" />
+    <ClCompile Include="..\..\Source_Files\RenderMain\D3D9_Blitter.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\D3D9_Setup.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\D3D9_Textures.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\Rasterizer_D3D9.cpp" />

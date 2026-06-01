@@ -108,6 +108,17 @@ public:
 	
 #endif
 
+#ifdef HAVE_DX9
+	// Direct3D 9 GPU text: builds a glyph-atlas texture (mirrors OGL_Reset) and
+	// draws a string as a batch of textured quads. (x,y) is the top-left baseline
+	// origin in backbuffer pixels; tint is 0xAARRGGBB.
+	void D3D9_Reset(bool IsStarting);
+	void D3D9_Render(const char *Text, float x, float y, float scale, unsigned long tint);
+	static void D3D9_ResetFonts(bool IsStarting);
+	static void D3D9_Register(FontSpecifier *F);
+	static void D3D9_Deregister(FontSpecifier *F);
+#endif
+
 	// Draw text without worrying about OpenGL vs. SDL mode.
 	int DrawText(SDL_Surface *s, const char *text, int x, int y, uint32 pixel, bool utf8 = false);
 
@@ -133,6 +144,17 @@ public:
 	GLuint NearFilter = GL_LINEAR;
 	uint32 DispList;
 	static std::set<FontSpecifier*> *m_font_registry;
+#endif
+
+#ifdef HAVE_DX9
+	// D3D9 glyph atlas: a texture plus per-glyph UV rects (left/right in U,
+	// top/bottom in V) and padded heights, built by D3D9_Reset.
+	struct IDirect3DTexture9 *D3D9_Texture = nullptr;
+	short D3D9_TxtrW = 0, D3D9_TxtrH = 0;
+	float D3D9_GlyphU0[256] = {}, D3D9_GlyphU1[256] = {};
+	float D3D9_GlyphV0[256] = {}, D3D9_GlyphV1[256] = {};
+	short D3D9_AscentP = 0, D3D9_DescentP = 0;
+	static std::set<FontSpecifier*> *m_d3d_font_registry;
 #endif
 };
 

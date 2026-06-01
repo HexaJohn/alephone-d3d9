@@ -54,6 +54,15 @@ Jan 12, 2001 (Loren Petrich):
 std::set<FontSpecifier*> *FontSpecifier::m_font_registry = NULL;
 #endif
 
+#ifdef HAVE_DX9
+#include <d3d9.h>
+#ifdef DrawText           // <windows.h> (via d3d9.h) macro clobbers FontSpecifier::DrawText
+#undef DrawText
+#endif
+#include "D3D9_Setup.h"
+std::set<FontSpecifier*> *FontSpecifier::m_d3d_font_registry = NULL;
+#endif
+
 // MacOS-specific: stuff that gets reused
 // static CTabHandle Grays = NULL;
 
@@ -80,6 +89,9 @@ FontSpecifier::~FontSpecifier()
 #ifdef HAVE_OPENGL
 	OGL_Reset(false);
 #endif
+#ifdef HAVE_DX9
+	D3D9_Reset(false);
+#endif
 }
 
 // Initializer: call before using because of difficulties in setting up a proper constructor:
@@ -90,6 +102,9 @@ void FontSpecifier::Init()
 	Update();
 #ifdef HAVE_OPENGL
 	OGL_Texture = NULL;
+#endif
+#ifdef HAVE_DX9
+	D3D9_Texture = NULL;
 #endif
 }
 
@@ -494,6 +509,201 @@ void FontSpecifier::OGL_Deregister(FontSpecifier *F)
 }
 
 #endif // def HAVE_OPENGL
+
+
+#ifdef HAVE_DX9
+// Build a glyph-atlas texture and per-glyph UV rects for Direct3D 9 text. This
+// mirrors OGL_Reset: it lays out all 256 glyphs into a power-of-two surface,
+// then uploads it as a D3D9 texture (white RGB, glyph coverage in alpha) so
+// D3D9_Render can draw each character as a tinted textured quad.
+void FontSpecifier::D3D9_Reset(bool IsStarting)
+{
+	if (!IsStarting && D3D9_Texture)
+	{
+		D3D9_Texture->Release();
+		D3D9_Texture = NULL;
+		D3D9_Deregister(this);
+	}
+	if (!IsStarting)
+		return;
+	if (D3D9_Texture)   // already built
+		return;
+
+	const int Pad = 1;
+	int ascent_p = Ascent + Pad, descent_p = Descent + Pad;
+	int widths_p[256];
+	for (int i = 0; i < 256; i++)
+		widths_p[i] = Widths[i] + 2 * Pad;
+
+	int TotalWidth = 0;
+	for (int k = 0; k < 256; k++)
+		TotalWidth += widths_p[k];
+	if (TotalWidth <= 0)
+		return;
+
+	int GlyphHeight = ascent_p + descent_p;
+	int EstDim = int(sqrt(static_cast<float>(TotalWidth * GlyphHeight)) + 0.5);
+	int TW = MAX(128, NextPowerOfTwo(EstDim));
+
+	unsigned char CharStarts[256], CharCounts[256];
+	int LastLine = 0;
+	CharStarts[0] = 0; CharCounts[0] = 0;
+	short Pos = 0;
+	for (int k = 0; k < 256; k++)
+	{
+		short NewPos = Pos + widths_p[k];
+		if (NewPos > TW)
+		{
+			LastLine++;
+			CharStarts[LastLine] = k;
+			Pos = widths_p[k];
+			CharCounts[LastLine] = 1;
+		}
+		else { Pos = NewPos; CharCounts[LastLine]++; }
+	}
+	int TH = MAX(128, NextPowerOfTwo(GlyphHeight * (LastLine + 1)));
+
+	SDL_Surface *FontSurface = SDL_CreateRGBSurface(SDL_SWSURFACE, TW, TH, 32,
+													0xff0000, 0x00ff00, 0x0000ff, 0xff000000);
+	if (!FontSurface)
+		return;
+	SDL_FillRect(FontSurface, NULL, SDL_MapRGBA(FontSurface->format, 0, 0, 0, 0));
+	Uint32 White = SDL_MapRGBA(FontSurface->format, 0xFF, 0xFF, 0xFF, 0xFF);
+
+	for (int k = 0; k <= LastLine; k++)
+	{
+		unsigned char Which = CharStarts[k];
+		int VPos = (k * GlyphHeight) + ascent_p;
+		int HPos = Pad;
+		for (int m = 0; m < CharCounts[k]; m++)
+		{
+			::draw_text(FontSurface, (char*)&Which, 1, HPos, VPos, White, Info, Style);
+			HPos += widths_p[Which++];
+		}
+	}
+
+	// draw_text wrote opaque white glyphs on a transparent surface; force the
+	// alpha to follow luminance so the atlas is a coverage mask.
+	SDL_LockSurface(FontSurface);
+	for (int y = 0; y < TH; y++)
+	{
+		uint32_t *px = (uint32_t*)((uint8_t*)FontSurface->pixels + y * FontSurface->pitch);
+		for (int x = 0; x < TW; x++)
+		{
+			uint32_t p = px[x];
+			uint8_t lum = (uint8_t)(p & 0xFF); // blue channel = coverage
+			px[x] = 0x00FFFFFFu | ((uint32_t)lum << 24);
+		}
+	}
+	SDL_UnlockSurface(FontSurface);
+
+	// Per-glyph UV rects.
+	const float TWidNorm = 1.0f / TW, THtNorm = 1.0f / TH;
+	for (int k = 0; k <= LastLine; k++)
+	{
+		unsigned char Which = CharStarts[k];
+		float Top = k * (THtNorm * GlyphHeight);
+		float Bottom = (k + 1) * (THtNorm * GlyphHeight);
+		int p = 0;
+		for (int m = 0; m < CharCounts[k]; m++)
+		{
+			short Width = widths_p[Which];
+			int NewPos = p + Width;
+			D3D9_GlyphU0[Which] = TWidNorm * p;
+			D3D9_GlyphU1[Which] = TWidNorm * NewPos;
+			D3D9_GlyphV0[Which] = Top;
+			D3D9_GlyphV1[Which] = Bottom;
+			p = NewPos;
+			Which++;
+		}
+	}
+	D3D9_TxtrW = TW; D3D9_TxtrH = TH;
+	D3D9_AscentP = ascent_p; D3D9_DescentP = descent_p;
+
+	int tw = 0, th = 0;
+	D3D9_UploadSurfaceTexture(FontSurface, &D3D9_Texture, &tw, &th, false);
+	SDL_FreeSurface(FontSurface);
+	if (D3D9_Texture)
+		D3D9_Register(this);
+}
+
+// Render a string as a batch of glyph quads. (x,y) is the top-left baseline
+// origin (matching OGL_Render, which translates to (x, y + Height*scale) and
+// draws each glyph from its baseline). tint is 0xAARRGGBB.
+void FontSpecifier::D3D9_Render(const char *Text, float x, float y, float scale, unsigned long tint)
+{
+	if (!D3D9_Texture)
+	{
+		D3D9_Reset(true);
+		if (!D3D9_Texture)
+			return;
+	}
+	if (!Text || !*Text)
+		return;
+
+	const int Pad = 1;
+	const int GlyphH = D3D9_AscentP + D3D9_DescentP;
+	// Baseline: OGL_Render draws glyphs with the rect [0,-ascent_p]..[Width,descent].
+	// We position the pen at (x, y + Ascent*scale) so the top of the text is at y.
+	float penX = x;
+	const float baseY = y + (float)Ascent * scale;
+
+	size_t Len = strlen(Text);
+	if (Len > 255) Len = 255;
+
+	D3D9_HUDVertex verts[255 * 6];
+	int vi = 0;
+	for (size_t k = 0; k < Len; k++)
+	{
+		unsigned char c = (unsigned char)Text[k];
+		short w = Widths[c];
+		float gw = (float)(w + 2 * Pad) * scale;
+		float gh = (float)GlyphH * scale;
+		// glyph quad top-left at (penX - Pad*scale, baseY - ascent_p*scale)
+		float gx = penX - (float)Pad * scale;
+		float gy = baseY - (float)D3D9_AscentP * scale;
+		float u0 = D3D9_GlyphU0[c], u1 = D3D9_GlyphU1[c];
+		float v0 = D3D9_GlyphV0[c], v1 = D3D9_GlyphV1[c];
+		D3DCOLOR col = (D3DCOLOR)tint;
+		float x0 = gx - 0.5f, y0 = gy - 0.5f, x1 = gx + gw - 0.5f, y1 = gy + gh - 0.5f;
+		D3D9_HUDVertex q0 = { x0, y0, 0, 1, (unsigned long)col, u0, v0 };
+		D3D9_HUDVertex q1 = { x1, y0, 0, 1, (unsigned long)col, u1, v0 };
+		D3D9_HUDVertex q2 = { x1, y1, 0, 1, (unsigned long)col, u1, v1 };
+		D3D9_HUDVertex q3 = { x0, y1, 0, 1, (unsigned long)col, u0, v1 };
+		verts[vi++] = q0; verts[vi++] = q1; verts[vi++] = q2;
+		verts[vi++] = q0; verts[vi++] = q2; verts[vi++] = q3;
+		penX += (float)w * scale;
+	}
+	if (vi > 0)
+		D3D9_DrawTexturedTris(verts, vi / 3, D3D9_Texture, tint);
+}
+
+void FontSpecifier::D3D9_ResetFonts(bool IsStarting)
+{
+	if (!m_d3d_font_registry)
+		return;
+	std::set<FontSpecifier*>::iterator it;
+	if (IsStarting)
+		for (it = m_d3d_font_registry->begin(); it != m_d3d_font_registry->end(); ++it)
+			(*it)->D3D9_Reset(IsStarting);
+	else
+		for (it = m_d3d_font_registry->begin(); it != m_d3d_font_registry->end(); it = m_d3d_font_registry->begin())
+			(*it)->D3D9_Reset(IsStarting);
+}
+
+void FontSpecifier::D3D9_Register(FontSpecifier *F)
+{
+	if (!m_d3d_font_registry)
+		m_d3d_font_registry = new std::set<FontSpecifier*>;
+	m_d3d_font_registry->insert(F);
+}
+
+void FontSpecifier::D3D9_Deregister(FontSpecifier *F)
+{
+	if (m_d3d_font_registry)
+		m_d3d_font_registry->erase(F);
+}
+#endif // def HAVE_DX9
 
 
 // Draw text without worrying about OpenGL vs. SDL mode.

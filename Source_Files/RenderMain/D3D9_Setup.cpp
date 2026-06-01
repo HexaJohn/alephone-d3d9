@@ -880,4 +880,168 @@ void D3D9_DrawScreenSpriteUV(float x0, float y0, float x1, float y1, float z,
 	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, quad, sizeof(SpriteVertex));
 }
 
+// --- GPU HUD primitives (Lua HUD, drawn straight to the open backbuffer) ---
+//
+// These mirror the OpenGL HUD path (OGL_RenderRect / OGL_Blitter / font display
+// lists): screen-space XYZRHW quads, straight alpha blend, no depth, full
+// viewport. Colors are premultiplied-style 0xAARRGGBB; for textured draws the
+// diffuse acts as a tint (MODULATE), matching glColor4f + textured glyph/image.
+
+// Common state for HUD draws. tex==null => solid color (DIFFUSE only).
+static void hud_setup_state(IDirect3DTexture9* tex)
+{
+	d3d_device->SetRenderState(D3DRS_LIGHTING, FALSE);
+	d3d_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+	d3d_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+	d3d_device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+	d3d_device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	d3d_device->SetTexture(0, tex);
+	if (tex)
+	{
+		d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+		d3d_device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+		d3d_device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+		d3d_device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+		d3d_device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+		d3d_device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+		d3d_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+		d3d_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+		d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+		d3d_device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+	}
+	else
+	{
+		d3d_device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
+		d3d_device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+		d3d_device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2);
+		d3d_device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+	}
+}
+
+void D3D9_HUDBegin()
+{
+	if (!d3d_device) return;
+	set_full_viewport();
+}
+
+void D3D9_HUDEnd()
+{
+	if (!d3d_device) return;
+	d3d_device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+}
+
+void D3D9_DrawColorQuad(float x, float y, float w, float h, unsigned long argb)
+{
+	if (!d3d_device || w <= 0 || h <= 0) return;
+	const D3DCOLOR c = (D3DCOLOR)argb;
+	const float x0 = x - 0.5f, y0 = y - 0.5f, x1 = x + w - 0.5f, y1 = y + h - 0.5f;
+	const SpriteVertex q[4] = {
+		{ x0, y0, 0, 1, c, 0, 0 },
+		{ x1, y0, 0, 1, c, 0, 0 },
+		{ x1, y1, 0, 1, c, 0, 0 },
+		{ x0, y1, 0, 1, c, 0, 0 },
+	};
+	hud_setup_state(nullptr);
+	d3d_device->SetFVF(SPRITE_FVF);
+	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, q, sizeof(SpriteVertex));
+}
+
+void D3D9_DrawTexturedQuad(float x, float y, float w, float h,
+						   float u0, float v0, float u1, float v1,
+						   IDirect3DTexture9* tex, unsigned long argb_tint)
+{
+	if (!d3d_device || !tex || w <= 0 || h <= 0) return;
+	const D3DCOLOR c = (D3DCOLOR)argb_tint;
+	const float x0 = x - 0.5f, y0 = y - 0.5f, x1 = x + w - 0.5f, y1 = y + h - 0.5f;
+	const SpriteVertex q[4] = {
+		{ x0, y0, 0, 1, c, u0, v0 },
+		{ x1, y0, 0, 1, c, u1, v0 },
+		{ x1, y1, 0, 1, c, u1, v1 },
+		{ x0, y1, 0, 1, c, u0, v1 },
+	};
+	hud_setup_state(tex);
+	d3d_device->SetFVF(SPRITE_FVF);
+	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, 2, q, sizeof(SpriteVertex));
+}
+
+// Draw a batch of pre-built textured/tinted vertices (glyph quads). count =
+// number of triangles; verts are TRIANGLELIST (6 per quad).
+void D3D9_DrawTexturedTris(const void* verts, int tri_count,
+						   IDirect3DTexture9* tex, unsigned long argb_tint)
+{
+	(void)argb_tint;
+	if (!d3d_device || !tex || tri_count <= 0) return;
+	hud_setup_state(tex);
+	d3d_device->SetFVF(SPRITE_FVF);
+	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, tri_count, verts, sizeof(SpriteVertex));
+}
+
+void D3D9_SetScissor(int x, int y, int w, int h)
+{
+	if (!d3d_device) return;
+	RECT r = { x, y, x + w, y + h };
+	d3d_device->SetScissorRect(&r);
+	d3d_device->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+}
+
+void D3D9_DisableScissor()
+{
+	if (!d3d_device) return;
+	d3d_device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+}
+
+// Create/refresh a MANAGED ARGB texture from a 32-bit SDL surface. *cache holds
+// the texture across calls; pass the surface's current size. Returns the
+// texture (or null). The surface is assumed 32-bit; RGB is copied and alpha is
+// taken from the surface alpha (or forced opaque if the surface has no alpha).
+IDirect3DTexture9* D3D9_UploadSurfaceTexture(SDL_Surface* surface,
+											 IDirect3DTexture9** cache,
+											 int* cache_w, int* cache_h,
+											 bool force_opaque)
+{
+	if (!d3d_device || !surface) return nullptr;
+	const int w = surface->w, h = surface->h;
+	if (*cache && (*cache_w != w || *cache_h != h))
+	{
+		(*cache)->Release();
+		*cache = nullptr;
+	}
+	if (!*cache)
+	{
+		HRESULT hr = d3d_device->CreateTexture(w, h, 1, 0, D3DFMT_A8R8G8B8,
+											   D3DPOOL_MANAGED, cache, nullptr);
+		if (FAILED(hr)) { *cache = nullptr; return nullptr; }
+		*cache_w = w; *cache_h = h;
+	}
+	D3DLOCKED_RECT lr;
+	if (FAILED((*cache)->LockRect(0, &lr, nullptr, 0))) return *cache;
+	SDL_LockSurface(surface);
+	// Repack using the surface's own channel masks so any 32-bit format (RGBA,
+	// BGRA, ARGB...) lands correctly as D3D A8R8G8B8 (0xAARRGGBB). Avoids R/B
+	// swap bugs from assuming a fixed byte order.
+	const SDL_PixelFormat* f = surface->format;
+	const bool has_alpha = f->Amask != 0 && !force_opaque;
+	for (int yy = 0; yy < h; ++yy)
+	{
+		const uint32_t* s = (const uint32_t*)((uint8_t*)surface->pixels + yy * surface->pitch);
+		uint32_t* d = (uint32_t*)((uint8_t*)lr.pBits + yy * lr.Pitch);
+		for (int xx = 0; xx < w; ++xx)
+		{
+			uint32_t p = s[xx];
+			uint32_t r = ((p & f->Rmask) >> f->Rshift) << f->Rloss;
+			uint32_t g = ((p & f->Gmask) >> f->Gshift) << f->Gloss;
+			uint32_t b = ((p & f->Bmask) >> f->Bshift) << f->Bloss;
+			uint32_t a = has_alpha ? (((p & f->Amask) >> f->Ashift) << f->Aloss) : 0xFFu;
+			d[xx] = (a << 24) | (r << 16) | (g << 8) | b;
+		}
+	}
+	SDL_UnlockSurface(surface);
+	(*cache)->UnlockRect(0);
+	return *cache;
+}
+
 #endif // HAVE_DX9

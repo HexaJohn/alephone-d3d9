@@ -83,6 +83,7 @@ protected:
 	std::vector<blip_info> m_blips;
 	bool m_drawing;
 	bool m_opengl;
+	bool m_d3d9 = false;
 	SDL_Surface *m_surface;
 	SDL_Rect m_wr;
 	short m_masking_mode;

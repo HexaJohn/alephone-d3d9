@@ -360,9 +360,56 @@ void Shape_Blitter::SDL_Draw(SDL_Surface *dst_surface, const Image_Rect& dst)
 	SDL_BlitSurface(m_scaled_surface, &r, dst_surface, &sdst);
 }
 
+#ifdef HAVE_DX9
+#include <d3d9.h>
+#include "D3D9_Setup.h"
+
+void Shape_Blitter::D3D9_Draw(const Image_Rect& dst)
+{
+    // Reuse SDL_Draw's surface preparation (loads m_surface / m_scaled_surface,
+    // handles wall rotation, landscape flip, blip color-key). It blits into the
+    // passed surface, but we only need the prepared m_scaled_surface, so give it
+    // a throwaway 1x1 target.
+    static SDL_Surface* scratch = nullptr;
+    if (!scratch)
+        scratch = SDL_CreateRGBSurface(SDL_SWSURFACE, 1, 1, 32, 0, 0, 0, 0);
+    SDL_Draw(scratch, Image_Rect(0, 0, 0, 0));
+    if (!m_scaled_surface)
+        return;
+
+    // Upload the prepared surface to a managed texture (rebuild if it changed).
+    if (m_d3d_src != m_scaled_surface)
+    {
+        if (m_d3d_texture) { m_d3d_texture->Release(); m_d3d_texture = nullptr; }
+        m_d3d_tex_w = m_d3d_tex_h = 0;
+        m_d3d_src = m_scaled_surface;
+    }
+    if (!D3D9_UploadSurfaceTexture(m_scaled_surface, &m_d3d_texture, &m_d3d_tex_w, &m_d3d_tex_h, false))
+        return;
+
+    const float sw = (m_scaled_surface->w > 0) ? (float)m_scaled_surface->w : 1.0f;
+    const float sh = (m_scaled_surface->h > 0) ? (float)m_scaled_surface->h : 1.0f;
+    const float u0 = crop_rect.x / sw;
+    const float v0 = crop_rect.y / sh;
+    const float u1 = (crop_rect.x + crop_rect.w) / sw;
+    const float v1 = (crop_rect.y + crop_rect.h) / sh;
+
+    const unsigned long tint =
+        ((unsigned long)(tint_color_a * 255.0f) << 24) |
+        ((unsigned long)(tint_color_r * 255.0f) << 16) |
+        ((unsigned long)(tint_color_g * 255.0f) << 8) |
+        ((unsigned long)(tint_color_b * 255.0f));
+
+    D3D9_DrawTexturedQuad(dst.x, dst.y, dst.w, dst.h, u0, v0, u1, v1, m_d3d_texture, tint);
+}
+#endif // HAVE_DX9
+
 Shape_Blitter::~Shape_Blitter()
 {
     SDL_FreeSurface(m_surface);
     if (m_scaled_surface != m_surface)
     SDL_FreeSurface(m_scaled_surface);
+#ifdef HAVE_DX9
+    if (m_d3d_texture) { m_d3d_texture->Release(); m_d3d_texture = nullptr; }
+#endif
 }

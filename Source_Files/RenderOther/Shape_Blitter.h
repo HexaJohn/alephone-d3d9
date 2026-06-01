@@ -52,6 +52,10 @@ public:
 	
     void OGL_Draw(const Image_Rect& dst);
     void SDL_Draw(SDL_Surface *dst_surface, const Image_Rect& dst);
+#ifdef HAVE_DX9
+    // Draw to the open D3D9 backbuffer as a textured quad (GPU HUD path).
+    void D3D9_Draw(const Image_Rect& dst);
+#endif
 	
     ~Shape_Blitter();
 	
@@ -75,6 +79,11 @@ protected:
     
     SDL_Surface *m_surface;
     SDL_Surface *m_scaled_surface;
+#ifdef HAVE_DX9
+    struct IDirect3DTexture9 *m_d3d_texture = nullptr;
+    int m_d3d_tex_w = 0, m_d3d_tex_h = 0;
+    SDL_Surface *m_d3d_src = nullptr; // which surface m_d3d_texture was built from
+#endif
 };
 
 #endif

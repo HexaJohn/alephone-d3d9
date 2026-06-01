@@ -43,6 +43,9 @@ LUA_HUD_OBJECTS.CPP
 #include "render.h"
 #include "Image_Blitter.h"
 #include "OGL_Blitter.h"
+#ifdef HAVE_DX9
+#include "D3D9_Blitter.h"
+#endif
 #include "fades.h"
 #include "OGL_Faders.h"
 #include "Shape_Blitter.h"
@@ -411,13 +414,18 @@ int Lua_Images_New(lua_State *L)
         int resource_id = lua_tointeger(L, -1);
 
 		// blitter from image
-#ifdef HAVE_OPENGL
-		Image_Blitter *blitter = (get_screen_mode()->acceleration == _opengl_acceleration)
-			? new OGL_Blitter(TxtrTypeInfoList[OGL_Txtr_HUD].NearFilter)
-			: new Image_Blitter();
-#else
-		Image_Blitter *blitter = new Image_Blitter();
+		Image_Blitter *blitter;
+#ifdef HAVE_DX9
+		if (get_screen_mode()->acceleration == _direct3d_acceleration)
+			blitter = new D3D9_Blitter();
+		else
 #endif
+#ifdef HAVE_OPENGL
+		if (get_screen_mode()->acceleration == _opengl_acceleration)
+			blitter = new OGL_Blitter(TxtrTypeInfoList[OGL_Txtr_HUD].NearFilter);
+		else
+#endif
+			blitter = new Image_Blitter();
 
         if (!blitter->Load(resource_id))
         {
@@ -506,13 +514,18 @@ int Lua_Images_New(lua_State *L)
 	}
 	
 	// blitter from image
-#ifdef HAVE_OPENGL
-	Image_Blitter *blitter = (get_screen_mode()->acceleration == _opengl_acceleration)
-		? new OGL_Blitter()
-		: new Image_Blitter();
-#else
-	Image_Blitter *blitter = new Image_Blitter();
+	Image_Blitter *blitter;
+#ifdef HAVE_DX9
+	if (get_screen_mode()->acceleration == _direct3d_acceleration)
+		blitter = new D3D9_Blitter();
+	else
 #endif
+#ifdef HAVE_OPENGL
+	if (get_screen_mode()->acceleration == _opengl_acceleration)
+		blitter = new OGL_Blitter();
+	else
+#endif
+		blitter = new Image_Blitter();
 	if (!blitter->Load(image))
 	{
 		lua_pushnil(L);

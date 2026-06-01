@@ -1529,13 +1529,11 @@ void render_screen(short ticks_elapsed)
 								   false);
 		}
 
-		// HUD panel (non-Lua). draw_interface() only refills HUD_Buffer on
-		// events; force a full redraw so the panel is present every frame the
-		// world is rebuilt (the D3D9 backbuffer is cleared each frame).
+		// HUD panel (non-Lua).
 		if (!Screen::instance()->lua_hud() && Screen::instance()->hud()) {
 			ensure_HUD_buffer();
-			draw_interface();          // full panel redraw (background + frame)
-			update_interface(NONE);    // dynamic elements (health/ammo/sensor)
+			draw_interface();
+			update_interface(NONE);
 			SDL_Rect src_rect = { 0, 320, 640, 160 };
 			DrawSurface(HUD_Buffer, HUD_DestRect, src_rect);
 			D3D9_BlitSurfaceRegion(main_surface,
@@ -1545,17 +1543,11 @@ void render_screen(short ticks_elapsed)
 			HUD_RenderRequest = false;
 		}
 
-		// Lua HUD (chrome frame + floating elements). main_surface has a real
-		// alpha channel for D3D9; clear it fully transparent, let the Lua HUD
-		// draw (its blits carry source alpha: opaque chrome = 0xFF, untouched =
-		// 0), then alpha-composite the whole surface over the native world.
+		// Lua HUD (chrome frame + floating elements). Drawn on the GPU straight
+		// to the open backbuffer (D3D9 HUD primitives), so no software surface
+		// or full-window composite.
 		if (Screen::instance()->lua_hud()) {
-			SDL_FillRect(main_surface, NULL, SDL_MapRGBA(main_surface->format, 0, 0, 0, 0));
 			Lua_DrawHUD(ticks_elapsed);
-			D3D9_BlitSurfaceRegion(main_surface,
-								   0, 0, main_surface->w, main_surface->h,
-								   0, 0, main_surface->w, main_surface->h,
-								   true, -1);
 		}
 
 		// Terminal.
