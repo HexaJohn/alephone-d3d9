@@ -149,7 +149,8 @@ enum /* screen sizes */
 enum /* hardware acceleration codes */
 {
 	_no_acceleration,
-	_opengl_acceleration
+	_opengl_acceleration,
+	_direct3d_acceleration	// D3D9 fixed-function backend (Windows only); falls back to software until implemented
 };
 
 enum /* screen selection based on game state */

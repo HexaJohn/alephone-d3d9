@@ -1027,7 +1027,11 @@ static const char *gamma_labels[9] = {
 };
 
 static const char* renderer_labels[] = {
-	"Software", "OpenGL", NULL
+	"Software", "OpenGL",
+#ifdef HAVE_DX9
+	"Direct3D",
+#endif
+	NULL
 };
 
 static const char *bobbing_view_labels[] = {
@@ -1196,6 +1200,14 @@ static void rendering_options_dialog_demux(void* arg)
 		case _opengl_acceleration:
 			OpenGLDialog::Create (theSelectedRenderer)->OpenGLPrefsByRunning ();
 			break;
+
+#ifdef HAVE_DX9
+		case _direct3d_acceleration:
+			// No dedicated Direct3D options dialog yet; reuse the OpenGL one so
+			// shared settings (vsync, multisampling) are reachable.
+			OpenGLDialog::Create (_opengl_acceleration)->OpenGLPrefsByRunning ();
+			break;
+#endif
 
 		default:
 			assert(false);

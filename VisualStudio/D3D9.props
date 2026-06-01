@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    Shared Direct3D 9 (RTX Remix backend) build settings.
+    Imported by LibAlephOne.vcxproj (for compiling D3D9_*.cpp) and
+    AlephOne.vcxproj (for linking the D3D9 libs). Windows / DXSDK only.
+    Relies on the DXSDK_DIR environment variable set by the
+    DirectX SDK (June 2010) installer.
+  -->
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>HAVE_DX9;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(DXSDK_DIR)Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(DXSDK_DIR)Lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>d3d9.lib;d3dx9.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

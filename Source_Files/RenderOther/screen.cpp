@@ -55,6 +55,7 @@
 #include "computer_interface.h"
 #include "Crosshairs.h"
 #include "OGL_Render.h"
+#include "D3D9_Setup.h"
 #include "ViewControl.h"
 #include "screen_drawing.h"
 #include "mouse.h"
@@ -644,7 +645,7 @@ static void reallocate_map_pixels(int width, int height)
 void ReloadViewContext(void)
 {
 #ifdef HAVE_OPENGL
-	if (in_game && screen_mode.acceleration != _no_acceleration)
+	if (in_game && screen_mode.acceleration == _opengl_acceleration)
 		OGL_StartRun();
 #endif
 }
@@ -681,7 +682,7 @@ void enter_screen(void)
 #if defined(HAVE_OPENGL) && !defined(MUST_RELOAD_VIEW_CONTEXT)
 	// if MUST_RELOAD_VIEW_CONTEXT, we know this just happened in
 	// change_screen_mode
-	if (screen_mode.acceleration != _no_acceleration)
+	if (screen_mode.acceleration == _opengl_acceleration)
 		OGL_StartRun();
 #endif
 
@@ -750,11 +751,20 @@ static bool need_mode_change(int window_width, int window_height,
 		return true;
 	}
 	
+	// is the Direct3D 9 backend in use? It is a hardware backend like OpenGL
+	// (no SDL software renderer), so the SW-renderer paths below must skip it.
+	bool wantd3d9 = false;
+#ifdef HAVE_DX9
+	wantd3d9 = !nogl && (screen_mode.acceleration == _direct3d_acceleration);
+	if (wantd3d9 != D3D9_IsActive())
+		return true;
+#endif
+
 	// are we switching to/from OpenGL?
 	bool wantgl = false;
 	bool hasgl = MainScreenIsOpenGL();
 #ifdef HAVE_OPENGL
-	wantgl = !nogl && (screen_mode.acceleration != _no_acceleration);
+	wantgl = !nogl && (screen_mode.acceleration == _opengl_acceleration);
 	if (wantgl != hasgl)
 		return true;
 	if (wantgl) {
@@ -789,7 +799,7 @@ static bool need_mode_change(int window_width, int window_height,
 			SDL_SetWindowPosition(main_screen, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 		}
 	}
-	if (!hasgl) {
+	if (!hasgl && !wantd3d9) {
 		int w, h;
 		SDL_RenderGetLogicalSize(main_render, &w, &h);
 		if (w != log_width || h != log_height) {
@@ -887,7 +897,7 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 	
 	if (need_mode_change(sdl_width, sdl_height, vmode_width, vmode_height, depth, nogl)) {
 #ifdef HAVE_OPENGL
-	if (!nogl && screen_mode.acceleration != _no_acceleration) {
+	if (!nogl && screen_mode.acceleration == _opengl_acceleration) {
 		passed_shader = false;
 		flags |= SDL_WINDOW_OPENGL;
 		SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
@@ -1057,9 +1067,21 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 		vhalt("Cannot find a working video mode.");
 	}
 #ifdef HAVE_OPENGL
-	if (!context_created && !nogl && screen_mode.acceleration != _no_acceleration) {
+	if (!context_created && !nogl && screen_mode.acceleration == _opengl_acceleration) {
 		SDL_GL_CreateContext(main_screen);
 		context_created = true;
+	}
+#endif
+#ifdef HAVE_DX9
+	if (!nogl && screen_mode.acceleration == _direct3d_acceleration) {
+		if (!D3D9_Startup(main_screen, vmode_width, vmode_height,
+						  (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0,
+						  Get_OGL_ConfigureData().WaitForVSync)) {
+			logWarning("Direct3D 9 device creation failed; falling back to software");
+			fprintf(stderr, "WARNING: Failed to initialize Direct3D 9 renderer\n");
+			fprintf(stderr, "WARNING: Retrying with Software renderer\n");
+			screen_mode.acceleration = graphics_preferences->screen_mode.acceleration = _no_acceleration;
+		}
 	}
 #endif
 	} // end if need_window
@@ -1077,7 +1099,7 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 		main_surface = SDL_CreateRGBSurface(SDL_SWSURFACE, vmode_width, vmode_height, 32, pixel_format_32.Rmask, pixel_format_32.Gmask, pixel_format_32.Bmask, 0);
 	}
 #ifdef MUST_RELOAD_VIEW_CONTEXT
-	if (!nogl && screen_mode.acceleration != _no_acceleration) 
+	if (!nogl && screen_mode.acceleration == _opengl_acceleration)
 		ReloadViewContext();
 #endif
 	if (depth == 8) {
@@ -1098,7 +1120,7 @@ static void change_screen_mode(int width, int height, int depth, bool nogl, bool
 	Term_Buffer = SDL_CreateRGBSurface(SDL_SWSURFACE, RECTANGLE_WIDTH(term_rect), RECTANGLE_HEIGHT(term_rect), 32, pixel_format_32.Rmask, pixel_format_32.Gmask, pixel_format_32.Bmask, pixel_format_32.Amask);
 
 #ifdef HAVE_OPENGL
-	if (!nogl && screen_mode.acceleration != _no_acceleration) {
+	if (!nogl && screen_mode.acceleration == _opengl_acceleration) {
 		static bool gl_info_printed = false;
 		if (!gl_info_printed)
 		{
@@ -1281,7 +1303,7 @@ void render_screen(short ticks_elapsed)
 	update_interpolated_world(heartbeat_fraction);
 
 	bool SwitchedModes = false;
-	
+
 	// Suppress the overhead map if desired
 	if (PLAYER_HAS_MAP_OPEN(current_player) && View_MapActive()) {
 		if (!world_view->overhead_map_active) {
@@ -1504,8 +1526,10 @@ void render_screen(short ticks_elapsed)
 	
 
 	// If the main view is not being rendered in software but OpenGL is active,
-	// then blit the software rendering to the screen
-	if (screen_mode.acceleration != _no_acceleration) {
+	// then blit the software rendering to the screen. The Direct3D 9 backend
+	// currently renders the view in software too, so it takes the software
+	// branch below (the final surface is presented through D3D9).
+	if (screen_mode.acceleration == _opengl_acceleration) {
 #ifdef HAVE_OPENGL
 		if (Screen::instance()->hud()) {
 			if (Screen::instance()->lua_hud())
@@ -1579,7 +1603,7 @@ void render_screen(short ticks_elapsed)
 
 #ifdef HAVE_OPENGL
 	// Swap OpenGL double-buffers
-	if (screen_mode.acceleration != _no_acceleration)
+	if (screen_mode.acceleration == _opengl_acceleration)
 	{
 		if (!get_keyboard_controller_status())
 		{
@@ -2257,7 +2281,12 @@ float MainScreenPixelScale()
 }
 bool MainScreenIsOpenGL()
 {
-	return (main_screen && !main_render);
+	// A window with no SDL software renderer means a hardware backend. That is
+	// OpenGL unless the Direct3D 9 backend owns the window, so exclude D3D9
+	// explicitly (otherwise OGL_IsActive() reports true and the GL shader
+	// rasterizer runs with no GL context).
+	return (main_screen && !main_render
+			&& graphics_preferences->screen_mode.acceleration != _direct3d_acceleration);
 }
 void MainScreenSwap()
 {
@@ -2288,6 +2317,13 @@ void MainScreenUpdateRect(int x, int y, int w, int h)
 }
 void MainScreenUpdateRects(size_t count, const SDL_Rect *rects)
 {
+#ifdef HAVE_DX9
+	if (graphics_preferences->screen_mode.acceleration == _direct3d_acceleration && D3D9_IsActive())
+	{
+		D3D9_Present2D(main_surface);
+		return;
+	}
+#endif
 	SDL_UpdateTexture(main_texture, NULL, main_surface->pixels, main_surface->pitch);
 	SDL_RenderClear(main_render);
 	SDL_RenderCopy(main_render, main_texture, NULL, NULL);

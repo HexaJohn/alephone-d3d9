@@ -234,6 +234,7 @@ extern WindowPtr screen_window;
 #include "RenderPlaceObjs.h"
 #include "RenderRasterize.h"
 #include "Rasterizer_SW.h"
+#include "D3D9_Setup.h"
 #ifdef HAVE_OPENGL
 #include "Rasterizer_OGL.h"
 #include "RenderRasterize_Shader.h"
@@ -477,15 +478,15 @@ void render_view(
 #ifdef HAVE_OPENGL
 			}
 #endif
-			
+
 			// Set its view:
 			RasPtr->SetView(*view);
-			
+
 			// Start rendering main view
 			RasPtr->Begin();
-			
+
 			// LP: now from the clipping/rasterizer class
-#ifdef HAVE_OPENGL			
+#ifdef HAVE_OPENGL
 			RenderRasterizerClass *RenPtr = (graphics_preferences->screen_mode.acceleration == _opengl_acceleration) ? &Render_Shader : &Render_Classic;
 #else
 			RenderRasterizerClass *RenPtr = &Render_Classic;
@@ -495,13 +496,13 @@ void render_view(
 			RenPtr->view = view;
 			RenPtr->RasPtr = RasPtr;
 			RenPtr->render_tree();
-			
+
 			// LP: won't put this into a separate class
 			/* render the player’s weapons, etc. */
                         if (!RenPtr->renders_viewer_sprites_in_tree()) {
                             render_viewer_sprite_layer(view, RasPtr);
                         }
-			
+
 			// Finish rendering main view
 			RasPtr->End();
 		}

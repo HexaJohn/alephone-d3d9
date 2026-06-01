@@ -98,6 +98,7 @@
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\D3D9.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -567,6 +568,7 @@
     <ClCompile Include="..\..\Source_Files\RenderMain\Crosshairs_SDL.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\ImageLoader_SDL.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\ImageLoader_Shared.cpp" />
+    <ClCompile Include="..\..\Source_Files\RenderMain\D3D9_Setup.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\OGL_Faders.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\OGL_FBO.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\OGL_Model_Def.cpp" />
