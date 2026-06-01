@@ -235,6 +235,9 @@ extern WindowPtr screen_window;
 #include "RenderRasterize.h"
 #include "Rasterizer_SW.h"
 #include "D3D9_Setup.h"
+#ifdef HAVE_DX9
+#include "Rasterizer_D3D9.h"
+#endif
 #ifdef HAVE_OPENGL
 #include "Rasterizer_OGL.h"
 #include "RenderRasterize_Shader.h"
@@ -291,6 +294,9 @@ static RenderPlaceObjsClass RenderPlaceObjs;		// Object-placement object
 static RenderRasterizerClass Render_Classic;		// Clipping and rasterization class
 
 static Rasterizer_SW_Class Rasterizer_SW;			// Software rasterizer
+#ifdef HAVE_DX9
+static Rasterizer_D3D9_Class Rasterizer_D3D9;		// Direct3D 9 fixed-function rasterizer
+#endif
 #ifdef HAVE_OPENGL
 static Rasterizer_OGL_Class Rasterizer_OGL;			// OpenGL rasterizer
 static Rasterizer_Shader_Class Rasterizer_Shader;   // Shader rasterizer
@@ -466,18 +472,21 @@ void render_view(
 			
 			// LP addition: set the current rasterizer to whichever is appropriate here
 			RasterizerClass *RasPtr;
+#ifdef HAVE_DX9
+			if (D3D9_IsActive())
+				RasPtr = &Rasterizer_D3D9;
+			else
+#endif
 #ifdef HAVE_OPENGL
 			if (OGL_IsActive())
 				RasPtr = &Rasterizer_Shader;
 			else
-			{
 #endif
+			{
 				assert(software_render_dest);
 				Rasterizer_SW.screen = software_render_dest;
 				RasPtr = &Rasterizer_SW;
-#ifdef HAVE_OPENGL
 			}
-#endif
 
 			// Set its view:
 			RasPtr->SetView(*view);

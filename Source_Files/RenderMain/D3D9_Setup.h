@@ -60,6 +60,19 @@ void D3D9_EndFrame();
 struct SDL_Surface;
 bool D3D9_Present2D(struct SDL_Surface* surface);
 
+// --- Native fixed-function world rendering (Rasterizer_D3D9) ---
+
+// Begin/end a native world frame: clear the backbuffer + depth, BeginScene /
+// EndScene + Present. Distinct from D3D9_Present2D (which blits a surface).
+bool D3D9_WorldBegin();
+void D3D9_WorldEnd();
+
+// Draw a convex polygon given as screen-space points, as a flat-shaded
+// triangle fan in the given color (0xRRGGBB). Used while the world geometry
+// is rendered untextured. Points are screen pixel coordinates.
+struct D3D9_ScreenPoint { float x, y; };
+void D3D9_DrawScreenPolygon(const D3D9_ScreenPoint* points, int count, unsigned long rgb);
+
 // Forward declaration so render code can reach the device without pulling in
 // <d3d9.h> everywhere. Defined in D3D9_Setup.cpp.
 struct IDirect3DDevice9* D3D9_Device();

@@ -569,6 +569,7 @@
     <ClCompile Include="..\..\Source_Files\RenderMain\ImageLoader_SDL.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\ImageLoader_Shared.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\D3D9_Setup.cpp" />
+    <ClCompile Include="..\..\Source_Files\RenderMain\Rasterizer_D3D9.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\OGL_Faders.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\OGL_FBO.cpp" />
     <ClCompile Include="..\..\Source_Files\RenderMain\OGL_Model_Def.cpp" />

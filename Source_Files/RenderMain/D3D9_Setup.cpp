@@ -311,4 +311,74 @@ bool D3D9_Present2D(SDL_Surface* surface)
 	return true;
 }
 
+// --- Native fixed-function world rendering ---
+
+// Flat-shaded screen-space vertex (pre-transformed, with diffuse color).
+struct WorldScreenVertex
+{
+	float x, y, z, rhw;
+	D3DCOLOR color;
+};
+static const DWORD WORLD_SCREEN_FVF = D3DFVF_XYZRHW | D3DFVF_DIFFUSE;
+
+bool D3D9_WorldBegin()
+{
+	if (!d3d_device)
+		return false;
+
+	if (device_lost && !handle_device_lost())
+		return false;
+
+	d3d_device->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL,
+					  D3DCOLOR_XRGB(0, 0, 0), 1.0f, 0);
+
+	if (FAILED(d3d_device->BeginScene()))
+		return false;
+
+	// Fixed-function, no lighting/culling, depth off for now (polygons arrive
+	// pre-sorted back-to-front from the engine's render tree).
+	d3d_device->SetRenderState(D3DRS_LIGHTING, FALSE);
+	d3d_device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+	d3d_device->SetRenderState(D3DRS_ZENABLE, FALSE);
+	d3d_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+	d3d_device->SetTexture(0, nullptr);
+	d3d_device->SetFVF(WORLD_SCREEN_FVF);
+	return true;
+}
+
+void D3D9_WorldEnd()
+{
+	if (!d3d_device)
+		return;
+
+	d3d_device->EndScene();
+
+	HRESULT hr = d3d_device->Present(nullptr, nullptr, nullptr, nullptr);
+	if (hr == D3DERR_DEVICELOST)
+		device_lost = true;
+}
+
+void D3D9_DrawScreenPolygon(const D3D9_ScreenPoint* points, int count, unsigned long rgb)
+{
+	if (!d3d_device || count < 3 || count > 16)
+		return;
+
+	const D3DCOLOR color = D3DCOLOR_XRGB((rgb >> 16) & 0xff,
+										 (rgb >> 8) & 0xff,
+										 rgb & 0xff);
+
+	WorldScreenVertex verts[16];
+	for (int i = 0; i < count; ++i)
+	{
+		verts[i].x = points[i].x;
+		verts[i].y = points[i].y;
+		verts[i].z = 0.5f;
+		verts[i].rhw = 1.0f;
+		verts[i].color = color;
+	}
+
+	// Convex polygon -> triangle fan.
+	d3d_device->DrawPrimitiveUP(D3DPT_TRIANGLEFAN, count - 2, verts, sizeof(WorldScreenVertex));
+}
+
 #endif // HAVE_DX9

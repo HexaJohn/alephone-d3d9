@@ -1465,6 +1465,16 @@ void render_screen(short ticks_elapsed)
 	// Render world view
 	render_view(world_view, software_render_dest.get());
 
+#ifdef HAVE_DX9
+	// The Direct3D 9 rasterizer drew the world directly to the backbuffer and
+	// presented it in RasterizerClass::End(). HUD / 2D overlays are not yet
+	// ported to the native FFP path (Step 7), so finish the frame here.
+	if (screen_mode.acceleration == _direct3d_acceleration && D3D9_IsActive()) {
+		Movie::instance()->AddFrame(Movie::FRAME_NORMAL);
+		return;
+	}
+#endif
+
     // clear Lua drawing from previous frame
     // (SDL is slower if we do this before render_view)
     if (screen_mode.acceleration == _no_acceleration &&
