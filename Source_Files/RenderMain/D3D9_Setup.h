@@ -94,6 +94,12 @@ void D3D9_DrawScreenPolygon(const D3D9_ScreenPoint* points, int count, unsigned 
 
 // --- True 3D world rendering (RenderRasterize_D3D9) ---
 
+// When true, the D3D9 path submits the entire static level (all floors,
+// ceilings, walls) every frame in addition to the camera-visibility render, so
+// RTX Remix has off-screen geometry for real-time lights and reflections.
+// Toggle for A/B and perf comparison. Default on.
+extern bool d3d9_full_level_geometry;
+
 struct view_data;
 struct IDirect3DTexture9;
 

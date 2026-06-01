@@ -44,6 +44,12 @@ static IDirect3D9* d3d_object = nullptr;
 static D3DPRESENT_PARAMETERS present_params = {};
 static bool device_lost = false;
 
+// Full-level geometry pass toggle (see D3D9_Setup.h). Correct occlusion but
+// currently slow (per-surface TextureManager::Setup every frame across the
+// whole level); off until optimized with a per-level cached vertex/texture
+// build. Flip to true to A/B the Remix off-screen-geometry behavior.
+bool d3d9_full_level_geometry = false;
+
 // Remembered creation params so the device can be reset (e.g. when the window
 // size changes between the menu and gameplay) without re-querying SDL.
 static HWND d3d_hwnd = nullptr;

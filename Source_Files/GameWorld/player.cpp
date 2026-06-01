@@ -823,6 +823,10 @@ void update_players(ActionQueues* inActionQueuesToUse, bool inPredictive)
 
 
 
+// Debug cheats (single-player testing). Default on per request.
+bool cheat_god_mode = true;
+bool cheat_infinite_ammo = true;
+
 void damage_player(
 	short monster_index,
 	short aggressor_index,
@@ -833,6 +837,10 @@ void damage_player(
 	short player_index= monster_index_to_player_index(monster_index);
 	short aggressor_player_index= NONE; /* will be valid if the aggressor is a player */
 	struct player_data *player= get_player_data(player_index);
+
+	/* God mode: ignore all incoming damage to the player. */
+	if (cheat_god_mode)
+		return;
 	short damage_amount= calculate_damage(damage);
 	short damage_type= damage->type;
 	struct damage_response_definition *definition;

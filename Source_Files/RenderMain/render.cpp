@@ -518,6 +518,14 @@ void render_view(
 			RenPtr->RasPtr = RasPtr;
 			RenPtr->render_tree();
 
+#ifdef HAVE_DX9
+			// After the camera-visibility render, submit the whole static level
+			// so RTX Remix has off-screen geometry for real-time lights and
+			// reflections (the vis-tree only emits what the camera can see).
+			if (D3D9_IsActive() && d3d9_full_level_geometry)
+				Render_D3D9.render_full_level();
+#endif
+
 			// LP: won't put this into a separate class
 			/* render the player’s weapons, etc. */
                         if (!RenPtr->renders_viewer_sprites_in_tree()) {
@@ -642,12 +650,33 @@ static void update_view_data(
 	/* calculate world_to_screen_y*tan(pitch) */
 	view->dtanpitch= (view->world_to_screen_y*sine_table[view->pitch])/cosine_table[view->pitch];
 
+	/* Cull cone half-angle. Normally == half_cone (the projection FOV), so the
+	   visibility walk only queues polygons that touch the visible screen. RTX
+	   Remix needs geometry beyond the screen edges too (real-time lights and
+	   reflections off-screen), or surfaces pop in/out as you turn. Widen ONLY
+	   the cull cone for the D3D9/Remix path -- projection (world_to_screen,
+	   half_cone) is untouched so the rasterized image is unchanged; we just
+	   submit a larger visible set. Clamp under 90 deg each side so the cone
+	   stays < 180 deg total and the cross-product cone test in
+	   build_render_tree() keeps the right sign. */
+	angle cull_half_cone = view->half_cone;
+#ifdef HAVE_DX9
+	if (D3D9_IsActive())
+	{
+		const angle widen = (angle)(NUMBER_OF_ANGLES / 8); /* ~45 deg */
+		const angle max_half = (angle)(NUMBER_OF_ANGLES / 4 - 1); /* < 90 deg */
+		cull_half_cone += widen;
+		if (cull_half_cone > max_half)
+			cull_half_cone = max_half;
+	}
+#endif
+
 	/* calculate left cone vector */
-	theta= NORMALIZE_ANGLE(view->yaw-view->half_cone);
+	theta= NORMALIZE_ANGLE(view->yaw-cull_half_cone);
 	view->left_edge.i= cosine_table[theta], view->left_edge.j= sine_table[theta];
-	
+
 	/* calculate right cone vector */
-	theta= NORMALIZE_ANGLE(view->yaw+view->half_cone);
+	theta= NORMALIZE_ANGLE(view->yaw+cull_half_cone);
 	view->right_edge.i= cosine_table[theta], view->right_edge.j= sine_table[theta];
 	
 	/* if we’re sitting on one of the endpoints in our origin polygon, move us back slightly (±1) into

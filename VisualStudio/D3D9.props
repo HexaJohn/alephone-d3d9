@@ -13,7 +13,10 @@
       <AdditionalIncludeDirectories>$(DXSDK_DIR)Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>$(DXSDK_DIR)Lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <!-- DXSDK ships x86 + x64 import libs; pick by target platform.
+           $(PlatformShortName) is "x86" for Win32 and "x64" for x64,
+           matching the DXSDK Lib subdir names exactly. -->
+      <AdditionalLibraryDirectories>$(DXSDK_DIR)Lib\$(PlatformShortName);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>d3d9.lib;d3dx9.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>

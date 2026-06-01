@@ -137,13 +137,13 @@ void RenderRasterize_D3D9::render_tree()
 	RenderRasterizerClass::render_tree();
 }
 
-void RenderRasterize_D3D9::render_node_floor_or_ceiling(clipping_window_data* /*window*/,
-	polygon_data* polygon, horizontal_surface_data* surface, bool /*void_present*/,
-	bool ceil, RenderStep renderStep)
+// Draw one polygon's floor or ceiling as a world-space textured fan. Pure map
+// data in: the polygon (for its endpoints) and a horizontal_surface_data
+// (height/texture/light/origin). Shared by the vis-tree node path and the
+// full-level pass.
+static void draw_horizontal_surface(view_data* view, polygon_data* polygon,
+	horizontal_surface_data* surface, bool ceil)
 {
-	if (renderStep != kDiffuse)
-		return;
-
 	shape_descriptor texture = AnimTxtr_Translate(surface->texture);
 	if (texture == UNONE)
 		return;
@@ -183,63 +183,53 @@ void RenderRasterize_D3D9::render_node_floor_or_ceiling(clipping_window_data* /*
 	D3D9_DrawWorldPolygon(verts, vertex_count, tex, blended, blended);
 }
 
-void RenderRasterize_D3D9::render_node_side(clipping_window_data* /*window*/,
-	vertical_surface_data* surface, bool /*void_present*/, RenderStep renderStep)
+void RenderRasterize_D3D9::render_node_floor_or_ceiling(clipping_window_data* /*window*/,
+	polygon_data* polygon, horizontal_surface_data* surface, bool /*void_present*/,
+	bool ceil, RenderStep renderStep)
 {
 	if (renderStep != kDiffuse)
 		return;
-	if (!surface->texture_definition)
-		return;
+	draw_horizontal_surface(view, polygon, surface, ceil);
+}
 
-	shape_descriptor texture = AnimTxtr_Translate(surface->texture_definition->texture);
+// Draw one wall trapezoid in world space. Posts (p0=left, p1=right) and heights
+// (zt geometric top, zb bottom) are already world-space; tex_top_world is the
+// texture's vertical anchor in world-z (= the side's nominal top, which can be
+// above zt when the panel is clipped, so the texture stays continuous). Shared
+// by the vis-tree node path (which unprojects view-frame posts first) and the
+// full-level pass (which passes raw map endpoints).
+static void draw_wall_quad(view_data* view,
+	float p0x, float p0y, float p1x, float p1y,
+	float zt, float zb, float tex_top_world,
+	world_distance length, side_texture_definition* tex_def,
+	int16 transfer_mode, _fixed ambient)
+{
+	if (!tex_def)
+		return;
+	shape_descriptor texture = AnimTxtr_Translate(tex_def->texture);
 	if (texture == UNONE)
 		return;
-
-	world_distance h = (surface->h1 < surface->hmax) ? surface->h1 : surface->hmax;
-	if (h <= surface->h0)
+	if (zt <= zb)
 		return;
 
 	TextureManager TMgr;
-	IDirect3DTexture9* tex = setup_wall_texture(surface->texture_definition->texture,
-												surface->transfer_mode, TMgr);
+	IDirect3DTexture9* tex = setup_wall_texture(tex_def->texture, transfer_mode, TMgr);
 	if (!tex)
 		return; // texture setup failed; TMgr fields are invalid
 
-	_fixed ambient = get_light_intensity(surface->lightsource_index) + surface->ambient_delta;
-
 	float div = float(WORLD_ONE) * TMgr.TileRatio();
-	if (surface->transfer_mode == _xfer_2x) div = 2 * float(WORLD_ONE) * TMgr.TileRatio();
-	else if (surface->transfer_mode == _xfer_4x) div = 4 * float(WORLD_ONE) * TMgr.TileRatio();
+	if (transfer_mode == _xfer_2x) div = 2 * float(WORLD_ONE) * TMgr.TileRatio();
+	else if (transfer_mode == _xfer_4x) div = 4 * float(WORLD_ONE) * TMgr.TileRatio();
 	if (div == 0.0f) div = float(WORLD_ONE);
 
-	// Trapezoid posts (left p0, right p1), top h, bottom h0. p0/p1 are stored in
-	// the engine's view-centered frame: rotated by the view yaw and relative to
-	// the view origin. Undo both (inverse-rotate, then translate) to get world
-	// space that matches the floor/ceiling geometry.
-	const double trc = 1.0 / double(TRIG_MAGNITUDE);
-	float cy = float(trc * cosine_table[view->yaw]);
-	float sy = float(trc * sine_table[view->yaw]);
-	auto unproject = [&](long_vector2d p, float& wx, float& wy) {
-		float px = float(p.i), py = float(p.j);
-		wx = px * cy - py * sy + float(view->origin.x);
-		wy = px * sy + py * cy + float(view->origin.y);
-	};
-	float p0x, p0y, p1x, p1y;
-	unproject(surface->p0, p0x, p0y);
-	unproject(surface->p1, p1x, p1y);
-
 	int divi = (int)div ? (int)div : WORLD_ONE;
-	world_distance x0 = surface->texture_definition->x0 % divi;
-	world_distance y0 = surface->texture_definition->y0 % divi;
-	float tOffset = float(surface->h1 + view->origin.z + y0);
+	world_distance x0 = tex_def->x0 % divi;
+	world_distance y0 = tex_def->y0 % divi;
+	float tOffset = tex_top_world + float(y0);
 
-	// vertices: 0=top-left 1=top-right 2=bottom-right 3=bottom-left. Wall heights
-	// h0/h1 are relative to the view origin's z (unlike floor/ceiling absolute
-	// height), so add view->origin.z to put them in world space.
+	// vertices: 0=top-left 1=top-right 2=bottom-right 3=bottom-left.
 	D3D9_WorldVertex verts[4];
-	float zt = float(h + view->origin.z);
-	float zb = float(surface->h0 + view->origin.z);
-	float len = float(surface->length);
+	float len = float(length);
 
 	verts[0].x = p0x; verts[0].y = p0y; verts[0].z = zt;
 	verts[1].x = p1x; verts[1].y = p1y; verts[1].z = zt;
@@ -261,6 +251,46 @@ void RenderRasterize_D3D9::render_node_side(clipping_window_data* /*window*/,
 
 	bool blended = tex && TMgr.IsBlended();
 	D3D9_DrawWorldPolygon(verts, 4, tex, blended, blended);
+}
+
+void RenderRasterize_D3D9::render_node_side(clipping_window_data* /*window*/,
+	vertical_surface_data* surface, bool /*void_present*/, RenderStep renderStep)
+{
+	if (renderStep != kDiffuse)
+		return;
+	if (!surface->texture_definition)
+		return;
+
+	world_distance h = (surface->h1 < surface->hmax) ? surface->h1 : surface->hmax;
+	if (h <= surface->h0)
+		return;
+
+	// Trapezoid posts (left p0, right p1) are stored in the engine's view-centered
+	// frame: rotated by the view yaw and relative to the view origin. Undo both
+	// (inverse-rotate, then translate) to get world space matching the
+	// floor/ceiling geometry.
+	const double trc = 1.0 / double(TRIG_MAGNITUDE);
+	float cy = float(trc * cosine_table[view->yaw]);
+	float sy = float(trc * sine_table[view->yaw]);
+	auto unproject = [&](long_vector2d p, float& wx, float& wy) {
+		float px = float(p.i), py = float(p.j);
+		wx = px * cy - py * sy + float(view->origin.x);
+		wy = px * sy + py * cy + float(view->origin.y);
+	};
+	float p0x, p0y, p1x, p1y;
+	unproject(surface->p0, p0x, p0y);
+	unproject(surface->p1, p1x, p1y);
+
+	// Wall heights h0/h1 are relative to the view origin's z (unlike floor/ceiling
+	// absolute height), so add view->origin.z to put them in world space.
+	float zt = float(h + view->origin.z);
+	float zb = float(surface->h0 + view->origin.z);
+	float tex_top_world = float(surface->h1 + view->origin.z);
+
+	_fixed ambient = get_light_intensity(surface->lightsource_index) + surface->ambient_delta;
+
+	draw_wall_quad(view, p0x, p0y, p1x, p1y, zt, zb, tex_top_world,
+		surface->length, surface->texture_definition, surface->transfer_mode, ambient);
 }
 
 void RenderRasterize_D3D9::render_node_object(render_object_data* object,
@@ -353,6 +383,125 @@ void RenderRasterize_D3D9::render_node_object(render_object_data* object,
 	// base to dip into the floor; draw without depth test (the render tree is
 	// already back-to-front) so the floor doesn't clip the lower part.
 	D3D9_DrawWorldSprite(verts, 4, tex, blended);
+}
+
+// ---- full-level geometry pass (for RTX Remix) -------------------------------
+//
+// Submit the entire static level (floors, ceilings, walls) every frame in
+// world space, in addition to the normal vis-tree render, so Remix's real-time
+// lights and reflections have geometry that is off-screen / around corners /
+// behind the camera (which the camera-visibility walk never emits). The
+// rasterized image is unchanged: this draws the same surfaces with the same
+// depth, additively.
+//
+// The wall height/texture logic mirrors the engine's own surface construction
+// in RenderRasterize.cpp (render_node walls, ~lines 199-285) but uses absolute
+// world heights directly instead of view-relative (h - view->origin.z).
+
+// Draw the sized panels for one side, exactly as the engine's switch on
+// side->type does (full / high / low / split), plus the transparent texture.
+static void emit_full_level_side(view_data* view, polygon_data* polygon, short edge)
+{
+	short side_index = polygon->side_indexes[edge];
+	if (side_index == NONE)
+		return;
+
+	line_data* line = get_line_data(polygon->line_indexes[edge]);
+	side_data* side = get_side_data(side_index);
+
+	world_point2d e0 = get_endpoint_data(polygon->endpoint_indexes[edge])->vertex;
+	short next = (edge + 1) % polygon->vertex_count;
+	world_point2d e1 = get_endpoint_data(polygon->endpoint_indexes[next])->vertex;
+	if (e0.x == e1.x && e0.y == e1.y)
+		return; // degenerate
+
+	float p0x = float(e0.x), p0y = float(e0.y);
+	float p1x = float(e1.x), p1y = float(e1.y);
+	world_distance length = line->length;
+	_fixed ambient = get_light_intensity(side->primary_lightsource_index) + side->ambient_delta;
+	_fixed ambient2 = get_light_intensity(side->secondary_lightsource_index) + side->ambient_delta;
+
+	const world_distance floor_h = polygon->floor_height;
+	const world_distance ceil_h = polygon->ceiling_height;
+
+	// Draws one panel clamped to [bottom, top] (absolute world z); tex anchor at
+	// tex_top so textures stay continuous when geometric top is clamped.
+	auto panel = [&](world_distance top, world_distance bottom, world_distance tex_top,
+					 side_texture_definition* td, int16 xfer, _fixed amb) {
+		world_distance geo_top = (top < ceil_h) ? top : ceil_h; // hmax clamp
+		draw_wall_quad(view, p0x, p0y, p1x, p1y,
+			float(geo_top), float(bottom), float(tex_top), length, td, xfer, amb);
+	};
+
+	switch (side->type)
+	{
+		case _full_side:
+			panel(ceil_h, floor_h, ceil_h, &side->primary_texture,
+				  side->primary_transfer_mode, ambient);
+			break;
+		case _split_side: /* low side (secondary) first */
+			panel(MAX(line->highest_adjacent_floor, floor_h), floor_h,
+				  MAX(line->highest_adjacent_floor, floor_h),
+				  &side->secondary_texture, side->secondary_transfer_mode, ambient2);
+			/* fall through to high side */
+		case _high_side:
+			panel(ceil_h, MIN(line->lowest_adjacent_ceiling, ceil_h), ceil_h,
+				  &side->primary_texture, side->primary_transfer_mode, ambient);
+			break;
+		case _low_side:
+			panel(MAX(line->highest_adjacent_floor, floor_h), floor_h,
+				  MAX(line->highest_adjacent_floor, floor_h),
+				  &side->primary_texture, side->primary_transfer_mode, ambient);
+			break;
+		default:
+			break;
+	}
+
+	if (side->transparent_texture.texture != UNONE)
+	{
+		_fixed amb_t = get_light_intensity(side->transparent_lightsource_index) + side->ambient_delta;
+		panel(line->lowest_adjacent_ceiling,
+			  MAX(line->highest_adjacent_floor, floor_h),
+			  line->lowest_adjacent_ceiling,
+			  &side->transparent_texture, side->transparent_transfer_mode, amb_t);
+	}
+}
+
+void RenderRasterize_D3D9::render_full_level()
+{
+	if (!view || !map_polygons)
+		return;
+
+	short count = dynamic_world->polygon_count;
+	for (short pi = 0; pi < count; ++pi)
+	{
+		polygon_data* polygon = get_polygon_data(pi);
+		if (POLYGON_IS_DETACHED(polygon))
+			continue;
+
+		// Floor + ceiling from the polygon's own surfaces.
+		horizontal_surface_data fl;
+		fl.height = polygon->floor_height;
+		fl.lightsource_index = polygon->floor_lightsource_index;
+		fl.texture = polygon->floor_texture;
+		fl.transfer_mode = polygon->floor_transfer_mode;
+		fl.transfer_mode_data = 0;
+		fl.origin = polygon->floor_origin;
+		draw_horizontal_surface(view, polygon, &fl, false);
+
+		horizontal_surface_data ce;
+		ce.height = polygon->ceiling_height;
+		ce.lightsource_index = polygon->ceiling_lightsource_index;
+		ce.texture = polygon->ceiling_texture;
+		ce.transfer_mode = polygon->ceiling_transfer_mode;
+		ce.transfer_mode_data = 0;
+		ce.origin = polygon->ceiling_origin;
+		draw_horizontal_surface(view, polygon, &ce, true);
+
+		// Walls: every edge that has a side (textured), regardless of visibility.
+		for (short edge = 0; edge < polygon->vertex_count; ++edge)
+			emit_full_level_side(view, polygon, edge);
+	}
 }
 
 #endif // HAVE_DX9

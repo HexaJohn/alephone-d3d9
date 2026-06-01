@@ -36,6 +36,11 @@ class RenderRasterize_D3D9 : public RenderRasterizerClass
 public:
 	void render_tree() override;
 
+	// Submit the entire static level (floors/ceilings/walls) in world space,
+	// in addition to the vis-tree render, so RTX Remix has off-screen geometry
+	// for real-time lights and reflections. Call after render_tree().
+	void render_full_level();
+
 protected:
 	void render_node_floor_or_ceiling(clipping_window_data* window,
 		polygon_data* polygon, horizontal_surface_data* surface,

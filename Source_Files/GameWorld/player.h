@@ -512,6 +512,11 @@ void walk_player_list(void);
 void damage_player(short monster_index, short aggressor_index, short aggressor_type,
 	struct damage_definition *damage, short projectile_index);
 
+// Debug cheats (single-player testing): god mode skips all player damage,
+// infinite ammo skips magazine consumption when firing.
+extern bool cheat_god_mode;
+extern bool cheat_infinite_ammo;
+
 void mark_player_collections(bool loading);
 
 // ZZZ: new function to get current player_shape_definitions

@@ -2318,16 +2318,17 @@ static void put_rounds_into_weapon(
 	struct player_data *player= get_player_data(player_index);
 
 	assert(trigger_definition->ammunition_type>=0 && trigger_definition->ammunition_type<NUMBER_OF_ITEMS);
-	if (player->items[trigger_definition->ammunition_type] == 0) {
+	if (player->items[trigger_definition->ammunition_type] == 0 && !cheat_infinite_ammo) {
 		trigger->state = _weapon_lowering;
 		return;
 	}
-	
+
 	/* Load the gun */
 	trigger->rounds_loaded= trigger_definition->rounds_per_magazine;
 
-	/* Decrement the ammo magazine count. */
-	player->items[trigger_definition->ammunition_type]--;
+	/* Decrement the ammo magazine count (skipped under infinite-ammo cheat). */
+	if (!cheat_infinite_ammo)
+		player->items[trigger_definition->ammunition_type]--;
 
 	/* Update the inventory display. Second parameter: NONE- don't switch to ammo list */
 	/* _i_magnum_magazine- switch to ammo list */
